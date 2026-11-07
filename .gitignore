@@ -1,0 +1,17 @@
+node_modules
+.next
+dist
+.turbo
+coverage
+*.log
+.env
+.env.local
+.env.*.local
+.pgdata
+.pg/
+tools/spike/.keys
+tools/spike/out
+
+# The promo video project, its music and its renders stay local.
+promo/
+*.tsbuildinfo

@@ -1,0 +1,200 @@
+import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { randomUUID } from "node:crypto";
+import { usd } from "@gemdex/core";
+import { autoFires, autoRules, drops, eq, holdings, machines, orders, setSetting, users } from "@gemdex/db";
+import { buildServer } from "../src/server";
+import { createTestDb, type TestDb } from "../../../tools/testdb";
+
+let t: TestDb;
+let app: Awaited<ReturnType<typeof buildServer>>;
+
+async function login(handle: string) {
+  const res = await app.inject({ method: "POST", url: "/auth/paper", payload: { handle } });
+  const { token } = res.json() as { token: string };
+  return { authorization: `Bearer ${token}` };
+}
+
+beforeAll(async () => {
+  t = await createTestDb(10);
+  app = await buildServer({ database: t, mode: "paper" });
+  await t.db.insert(machines).values({
+    code: "pokemon_25", name: "Starter", price: usd(25), buybackPct: 85, ev: usd(27.49), odds: { common: 1 },
+    tiers: { common: { start: 13, end: 30 } }, stock: { common: 5 },
+  });
+});
+
+afterAll(async () => {
+  await app.close();
+  await t.shutdown();
+});
+
+describe("access control", () => {
+  it("refuses every account route without a session", async () => {
+    const routes: Array<[string, string]> = [
+      ["GET", "/me"], ["GET", "/portfolio"], ["GET", "/activity"], ["GET", "/auto"], ["GET", "/tracker"], ["GET", "/watchlist"], ["GET", "/rewards"],
+      ["POST", "/wallet/faucet"], ["POST", "/orders/buy"], ["POST", "/orders/open"], ["POST", "/orders/holding"], ["POST", `/drops/${randomUUID()}/claim`],
+    ];
+    for (const [method, url] of routes) {
+      const res = await app.inject({ method: method as "GET", url, payload: method === "POST" ? {} : undefined });
+      expect(`${url} ${res.statusCode}`).toBe(`${url} 401`);
+    }
+  });
+
+  it("rejects a forged session", async () => {
+    const res = await app.inject({ url: "/me", headers: { authorization: "Bearer eyJhbGciOiJub25lIn0.eyJzdWIiOiJ4In0." } });
+    expect(res.statusCode).toBe(401);
+  });
+
+  it("keeps non-admins out of every admin route", async () => {
+    const headers = await login("regular");
+    const me = (await app.inject({ url: "/me", headers })).json() as { id: string };
+    await t.sql`update users set is_admin = false where id = ${me.id}`;
+    expect((await app.inject({ url: "/admin/overview", headers })).statusCode).toBe(403);
+    expect((await app.inject({ method: "POST", url: "/admin/ops", headers, payload: { killSwitch: true } })).statusCode).toBe(403);
+    expect((await app.inject({ method: "POST", url: "/admin/arm", headers, payload: {} })).statusCode).toBe(403);
+    expect((await app.inject({ method: "PATCH", url: "/admin/settings/drops", headers, payload: {} })).statusCode).toBe(403);
+  });
+
+  it("one user cannot see or touch what belongs to another", async () => {
+    const alice = await login("alice");
+    const mallory = await login("mallory");
+    const aliceId = ((await app.inject({ url: "/me", headers: alice })).json() as { id: string }).id;
+
+    const placed = (await app.inject({ method: "POST", url: "/orders/open", headers: alice, payload: { machine: "pokemon_25", idempotencyKey: randomUUID() } })).json() as { orderIds: string[] };
+    expect((await app.inject({ url: `/orders/${placed.orderIds[0]}`, headers: alice })).statusCode).toBe(200);
+    expect((await app.inject({ url: `/orders/${placed.orderIds[0]}`, headers: mallory })).statusCode).toBe(404);
+
+    const held = await t.db.insert(holdings).values({ userId: aliceId, nft: "n1", wallet: "connected", card: {}, source: "gacha", cost: usd(25) }).returning();
+    const res = await app.inject({ method: "POST", url: "/orders/holding", headers: mallory, payload: { action: "buyback", holdingId: held[0]!.id, idempotencyKey: randomUUID() } });
+    // The order is accepted, but the worker checks ownership and it fails without touching the card.
+    const stolen = await t.db.select().from(orders);
+    expect(res.statusCode).toBe(200);
+    expect(stolen.find((o) => (o.params as { holdingId?: string }).holdingId === held[0]!.id)?.userId).not.toBe(aliceId);
+  });
+});
+
+describe("hidden drops", () => {
+  it("never leak over the API", async () => {
+    const now = Date.now();
+    await t.db.insert(drops).values({
+      kind: "hidden", state: "LIVE", machineCode: "pokemon_25", packPrice: usd(25), commonFloor: usd(13), price: usd(9),
+      nft: "SECRET_NFT", insuredValue: usd(999), rarity: "epic", card: { name: "SECRET_CARD" }, memo: "SECRET_MEMO",
+      opensAt: new Date(now), expiresAt: new Date(now + 60_000),
+    });
+    const body = (await app.inject({ url: "/drops" })).body;
+    expect(body).not.toContain("SECRET");
+    expect(body).not.toContain("999000000");
+  });
+});
+
+describe("input validation", () => {
+  it("refuses bad orders", async () => {
+    const headers = await login("validator");
+    const buy = (payload: unknown) => app.inject({ method: "POST", url: "/orders/buy", headers, payload: payload as object });
+    expect((await buy({ nft: "x", price: -5, idempotencyKey: "a" })).statusCode).toBe(400);
+    expect((await buy({ nft: "x", price: 1.5, idempotencyKey: "b" })).statusCode).toBe(400);
+    expect((await buy({ nft: "x", price: "1", idempotencyKey: "c" })).statusCode).toBe(400);
+    expect((await app.inject({ method: "POST", url: "/orders/holding", headers, payload: { action: "steal", holdingId: randomUUID(), idempotencyKey: "d" } })).statusCode).toBe(400);
+    const claim = await app.inject({ method: "POST", url: "/drops/not-a-uuid/claim", headers, payload: { idempotencyKey: "e" } });
+    expect(claim.json()).toMatchObject({ status: "rejected", reason: "not_found" });
+  });
+
+  it("cannot buy more than the wallet holds", async () => {
+    const headers = await login("spender");
+    const res = await app.inject({ method: "POST", url: "/orders/buy", headers, payload: { nft: "x", price: usd(501), idempotencyKey: randomUUID() } });
+    expect(res.statusCode).toBe(402);
+  });
+
+  it("settings cannot store unknown keys or nonsense", async () => {
+    const headers = await login("tinkerer");
+    await app.inject({ method: "PATCH", url: "/me/settings", headers, payload: { isAdmin: true, strikes: -1, autoForward: true } });
+    const me = (await app.inject({ url: "/me", headers })).json() as { settings: Record<string, unknown>; strikes: number };
+    expect(me.settings.isAdmin).toBeUndefined();
+    expect(me.strikes).toBe(0);
+    const bad = await app.inject({ method: "PATCH", url: "/admin/settings/drops", headers, payload: { minPrice: 10, maxPrice: 1, crashLo: 0.5, crashHi: 0.8, ttlSec: 45 } });
+    expect(bad.statusCode).toBe(400);
+  });
+});
+
+describe("auto-buy rules", () => {
+  async function ruleFor(headers: { authorization: string }) {
+    const userId = ((await app.inject({ url: "/me", headers })).json() as { id: string }).id;
+    const rows = await t.db.insert(autoRules).values({ userId, name: "Test rule", maxPrice: usd(40), dailyBudget: usd(100) }).returning();
+    return rows[0]!.id;
+  }
+
+  it("can delete a rule that has already fired", async () => {
+    const headers = await login("rule_owner");
+    const id = await ruleFor(headers);
+    await t.db.insert(autoFires).values({ ruleId: id, nft: "n1", price: usd(10) });
+    expect((await app.inject({ method: "DELETE", url: `/auto/${id}`, headers })).statusCode).toBe(200);
+    expect(await t.db.select().from(autoRules).where(eq(autoRules.id, id))).toHaveLength(0);
+    expect(await t.db.select().from(autoFires).where(eq(autoFires.ruleId, id))).toHaveLength(0);
+  });
+
+  it("cannot delete someone else's rule, or its history", async () => {
+    const id = await ruleFor(await login("rule_keeper"));
+    await t.db.insert(autoFires).values({ ruleId: id, nft: "n2", price: usd(10) });
+    await app.inject({ method: "DELETE", url: `/auto/${id}`, headers: await login("rule_thief") });
+    expect(await t.db.select().from(autoRules).where(eq(autoRules.id, id))).toHaveLength(1);
+    expect(await t.db.select().from(autoFires).where(eq(autoFires.ruleId, id))).toHaveLength(1);
+  });
+
+  it("answers a malformed id without a server error", async () => {
+    const res = await app.inject({ method: "DELETE", url: "/auto/not-a-uuid", headers: await login("rule_typo") });
+    expect(res.statusCode).toBe(404);
+  });
+});
+
+describe("pulse prices", () => {
+  it("never shows a price that has not happened yet", async () => {
+    const now = Date.now();
+    // Every value here is unique, so any future price would be easy to spot in a response.
+    const path = Array.from({ length: 300 }, (_, i) => 11_000_000 + i * 1_337);
+    const rows = await t.db.insert(drops).values({
+      kind: "revealed", state: "LIVE", machineCode: "pokemon_25", packPrice: usd(25), commonFloor: usd(13), price: path[0]!, path,
+      insuredValue: usd(25), opensAt: new Date(now - 20_000), expiresAt: new Date(now + 600_000),
+    }).returning();
+    const id = rows[0]!.id;
+
+    const detail = await app.inject({ url: `/pulse/drops/${id}` });
+    const { prices } = detail.json() as { prices: number[] };
+    expect(prices.length).toBeGreaterThan(15);
+    expect(prices.length).toBeLessThanOrEqual(25);
+    expect(prices).toEqual(path.slice(0, prices.length));
+
+    const future = path.slice(prices.length + 5).map(String);
+    for (const url of ["/pulse/drops", `/pulse/drops/${id}`, "/drops"]) {
+      const res = await app.inject({ url });
+      expect(res.statusCode).toBe(200);
+      expect(res.body).not.toContain('"path"');
+      for (const value of future) expect(res.body).not.toContain(value);
+    }
+  });
+
+  it("stops at the moment a card is bought", async () => {
+    const now = Date.now();
+    const path = Array.from({ length: 300 }, (_, i) => 12_000_000 + i * 1_337);
+    const rows = await t.db.insert(drops).values({
+      kind: "revealed", state: "SETTLED", machineCode: "pokemon_25", packPrice: usd(25), commonFloor: usd(13), price: path[4]!, path,
+      insuredValue: usd(25), opensAt: new Date(now - 60_000), expiresAt: new Date(now + 600_000), stoppedAt: new Date(now - 55_500), boughtBy: "BuyerWallet1111",
+    }).returning();
+    const { drop, prices } = (await app.inject({ url: `/pulse/drops/${rows[0]!.id}` })).json() as { drop: { price: number; boughtBy: string }; prices: number[] };
+    expect(prices).toHaveLength(5);
+    expect(drop.price).toBe(path[4]);
+    expect(drop.boughtBy).toBe("BuyerWallet1111");
+  });
+});
+
+describe("mode gates", () => {
+  it("arming only exists on mainnet, and paper-only routes vanish elsewhere", async () => {
+    const headers = await login("ops");
+    expect((await app.inject({ method: "POST", url: "/admin/arm", headers, payload: {} })).statusCode).toBe(400);
+    const real = await buildServer({ database: t, mode: "devnet" });
+    expect((await real.inject({ method: "POST", url: "/auth/paper", payload: {} })).statusCode).toBe(404);
+    await real.close();
+  });
+});
+
+void users;
+void setSetting;

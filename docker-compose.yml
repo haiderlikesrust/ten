@@ -1,0 +1,14 @@
+# Optional. `pnpm dev` starts its own Postgres without Docker.
+services:
+  postgres:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_USER: gemdex
+      POSTGRES_PASSWORD: gemdex
+      POSTGRES_DB: gemdex
+    ports:
+      - "54329:5432"
+    volumes:
+      - gemdex_pg:/var/lib/postgresql/data
+volumes:
+  gemdex_pg:

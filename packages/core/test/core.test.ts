@@ -1,0 +1,189 @@
+import { describe, expect, it } from "vitest";
+import {
+  DEFAULT_CASHBACK_SETTINGS as CB, DEFAULT_DROP_SETTINGS as S, HIDDEN, REVEALED, TERMINAL,
+  assertTransition, canTransition, cashbackAmount, cashbackCapBps, discountPct, expectedBurn,
+  floorToCents, formatUsd, hiddenPrice, holderBalance, intervalSeconds, matchesRule, ofBps,
+  parseGradeNumber, parseUsd, pauseReason, pickMachine, recycleCost, splitFees,
+  tierFor, usd, type AutoRule, type MachineEcon,
+} from "../src/index";
+
+const p25: MachineEcon = { code: "pokemon_25", price: usd(25), buybackPct: 85, ev: usd(27.49), commonFloor: usd(13), open: true, stock: 100 };
+const db50: MachineEcon = { code: "dragonball_50", price: usd(50), buybackPct: 93, ev: usd(51.44), commonFloor: usd(25), open: true, stock: 100 };
+
+/** Small seeded generator so property tests repeat exactly. */
+function rng(seed: number) {
+  return () => {
+    seed = (seed * 1664525 + 1013904223) >>> 0;
+    return seed / 2 ** 32;
+  };
+}
+
+describe("money", () => {
+  it("parses every shape CC sends", () => {
+    expect(parseUsd("$258.00")).toBe(usd(258));
+    expect(parseUsd("85")).toBe(usd(85));
+    expect(parseUsd(39)).toBe(usd(39));
+    expect(parseUsd("$1,250.50")).toBe(usd(1250.5));
+    expect(parseUsd(null)).toBeNull();
+    expect(parseUsd("n/a")).toBeNull();
+    expect(parseUsd(-1)).toBeNull();
+  });
+  it("rounds down and formats", () => {
+    expect(floorToCents(12_345_678)).toBe(12_340_000);
+    expect(ofBps(usd(100), 300)).toBe(usd(3));
+    expect(formatUsd(usd(5))).toBe("$5");
+    expect(formatUsd(usd(5.5))).toBe("$5.50");
+    expect(formatUsd(usd(-5.5))).toBe("-$5.50");
+    expect(formatUsd(usd(1500), { compact: true })).toBe("$1.5K");
+    expect(formatUsd(usd(20000), { compact: true })).toBe("$20K");
+  });
+  it("rejects values that are not safe integers", () => {
+    expect(() => usd(Number.MAX_VALUE)).toThrow();
+  });
+});
+
+describe("hidden price", () => {
+  it("is always below the lowest card the machine can give", () => {
+    const r = rng(2);
+    for (let i = 0; i < 50_000; i++) {
+      const floor = usd(Math.floor(r() * 3000) + 1);
+      const price = hiddenPrice(floor, r(), S);
+      if (price === null) continue;
+      expect(price).toBeGreaterThanOrEqual(S.minPrice);
+      expect(price).toBeLessThanOrEqual(S.maxPrice);
+      expect(price).toBeLessThan(floor);
+    }
+  });
+  it("returns null when no legal price exists", () => {
+    expect(hiddenPrice(usd(5), 0.5, S)).toBeNull();
+  });
+});
+
+describe("budget", () => {
+  it("reproduces the modelled cost per drop", () => {
+    expect(recycleCost(p25)).toBe(usd(25) - Math.floor((usd(27.49) * 85) / 100));
+    const burn = expectedBurn(p25, S);
+    // ($6.87 x 49%) + ($23.37 x 51%) comes back on a $25 pack, so about $9.72 is spent.
+    expect(burn.revealed).toBeGreaterThan(usd(9.5));
+    expect(burn.revealed).toBeLessThan(usd(10));
+    expect(burn.hidden).toBeGreaterThan(burn.revealed);
+  });
+  it("paces drops from budget and respects the floor", () => {
+    expect(intervalSeconds(usd(6.64), usd(1000), 30)).toBe(574);
+    expect(intervalSeconds(usd(1), usd(100_000), 30)).toBe(30);
+    expect(intervalSeconds(usd(5), 0, 30)).toBe(Number.POSITIVE_INFINITY);
+  });
+  it("pauses for the most serious reason first", () => {
+    const base = { enabled: true, killSwitch: false, reconcileHold: false, dropsBalance: usd(500), spent24h: 0, settings: S };
+    expect(pauseReason(base)).toBeNull();
+    expect(pauseReason({ ...base, dropsBalance: usd(1) })).toBe("wallet_floor");
+    expect(pauseReason({ ...base, spent24h: S.dailySpendCap })).toBe("daily_cap");
+    expect(pauseReason({ ...base, reconcileHold: true, dropsBalance: 0 })).toBe("reconcile_mismatch");
+    expect(pauseReason({ ...base, killSwitch: true, reconcileHold: true })).toBe("kill_switch");
+  });
+  it("skips closed or empty machines", () => {
+    const closed = { ...p25, open: false };
+    const empty = { ...db50, stock: 0 };
+    expect(pickMachine(S.machineMix, [closed, empty], 0.5)).toBeNull();
+    expect(pickMachine(S.machineMix, [closed, db50], 0.99)?.code).toBe("dragonball_50");
+  });
+});
+
+describe("cashback", () => {
+  it("always stays below the open-and-sell-back loss on every machine", () => {
+    for (const m of [p25, db50]) {
+      const cap = cashbackCapBps(m, CB);
+      const lossBps = (recycleCost(m) * 10_000) / m.price;
+      expect(cap).toBeLessThan(lossBps);
+      expect(cap).toBeLessThanOrEqual(CB.maxRateBps);
+    }
+  });
+  it("pays nothing when machine value is unknown", () => {
+    expect(cashbackCapBps({ ...p25, ev: null }, CB)).toBe(0);
+  });
+  it("respects tier, machine cap, daily cap and pool", () => {
+    const base = { packPrice: usd(100), tierBps: 300, machineCapBps: 200, paidToday: 0, dailyCap: usd(50), poolBalance: usd(500) };
+    expect(cashbackAmount(base)).toBe(usd(2));
+    expect(cashbackAmount({ ...base, paidToday: usd(49.5) })).toBe(usd(0.5));
+    expect(cashbackAmount({ ...base, poolBalance: usd(1) })).toBe(usd(1));
+    expect(cashbackAmount({ ...base, paidToday: usd(60) })).toBe(0);
+  });
+  it("uses the lowest snapshot, so flash buying earns nothing", () => {
+    expect(holderBalance([5_000_000, 5_000_000, 0, 5_000_000])).toBe(0);
+    expect(tierFor(holderBalance([1_200_000, 1_500_000]), CB.tiers)?.name).toBe("Ace");
+    expect(tierFor(10, CB.tiers)).toBeNull();
+    expect(holderBalance([])).toBe(0);
+  });
+});
+
+describe("fee split", () => {
+  it("is 30/70 and never loses dust", () => {
+    const r = rng(3);
+    for (let i = 0; i < 20_000; i++) {
+      const received = Math.floor(r() * 1e11);
+      const { cashback, drops } = splitFees(received, 3000);
+      expect(cashback + drops).toBe(received);
+      expect(cashback).toBe(Math.floor((received * 3000) / 10_000));
+    }
+    expect(splitFees(usd(100), 3000)).toEqual({ cashback: usd(30), drops: usd(70) });
+  });
+});
+
+describe("state machines", () => {
+  it("terminal states have no way out", () => {
+    for (const table of [REVEALED, HIDDEN]) {
+      for (const state of TERMINAL) expect(table[state]).toBeUndefined();
+    }
+  });
+  it("allows the happy paths", () => {
+    const rev = ["PLANNED", "PACK_PAID", "OPENING", "IN_VAULT", "LIVE", "CLAIMED", "SETTLING", "SETTLED"] as const;
+    rev.slice(1).forEach((to, i) => expect(canTransition("revealed", rev[i]!, to)).toBe(true));
+    const hid = ["LIVE", "CLAIMED", "QUOTED", "DEBITING", "PACK_PAYING", "OPENING", "DELIVERED"] as const;
+    hid.slice(1).forEach((to, i) => expect(canTransition("hidden", hid[i]!, to)).toBe(true));
+  });
+  it("blocks money from skipping steps", () => {
+    expect(canTransition("revealed", "LIVE", "SETTLED")).toBe(false);
+    expect(canTransition("hidden", "CLAIMED", "OPENING")).toBe(false);
+    expect(canTransition("hidden", "REFUND_DUE", "DELIVERED")).toBe(false);
+    expect(() => assertTransition("revealed", "SETTLED", "LIVE")).toThrow();
+  });
+  it("a hidden drop can only reopen before money has moved to CC", () => {
+    expect(canTransition("hidden", "DEBITING", "LIVE")).toBe(true);
+    expect(canTransition("hidden", "QUOTED", "LIVE")).toBe(true);
+    expect(canTransition("hidden", "PACK_PAYING", "LIVE")).toBe(false);
+    expect(canTransition("hidden", "OPENING", "LIVE")).toBe(false);
+  });
+});
+
+describe("auto-buy rules", () => {
+  const rule: AutoRule = { id: "r", enabled: true, name: "x", category: "Pokemon", grader: "PSA", minGrade: 9, maxPrice: usd(200), minDiscountPct: 20, search: "charizard", dailyBudget: usd(500) };
+  const listing = { name: "2016 Charizard PSA 10", category: "Pokemon", grader: "psa", gradeNum: 10, price: usd(150), insuredValue: usd(200) };
+  it("matches only when everything lines up", () => {
+    expect(matchesRule(rule, listing, 0)).toBe(true);
+    expect(matchesRule({ ...rule, enabled: false }, listing, 0)).toBe(false);
+    expect(matchesRule(rule, { ...listing, price: usd(201) }, 0)).toBe(false);
+    expect(matchesRule(rule, { ...listing, gradeNum: 8 }, 0)).toBe(false);
+    expect(matchesRule(rule, { ...listing, gradeNum: null }, 0)).toBe(false);
+    expect(matchesRule(rule, { ...listing, category: "One Piece" }, 0)).toBe(false);
+    expect(matchesRule(rule, { ...listing, name: "Pikachu" }, 0)).toBe(false);
+    expect(matchesRule(rule, { ...listing, price: usd(190) }, 0)).toBe(false);
+    expect(matchesRule(rule, { ...listing, insuredValue: null }, 0)).toBe(false);
+  });
+  it("enforces the rolling budget", () => {
+    expect(matchesRule(rule, listing, usd(400))).toBe(false);
+    expect(matchesRule(rule, listing, usd(350))).toBe(true);
+  });
+});
+
+describe("misc", () => {
+  it("reads grades", () => {
+    expect(parseGradeNumber("GEM-MT 10")).toBe(10);
+    expect(parseGradeNumber("NM-MT 8.5")).toBe(8.5);
+    expect(parseGradeNumber("Authentic")).toBeNull();
+    expect(parseGradeNumber("x", 9)).toBe(9);
+  });
+  it("computes discount", () => {
+    expect(discountPct(usd(100), usd(1000))).toBe(90);
+    expect(discountPct(usd(1), 0)).toBe(0);
+  });
+});

@@ -1,0 +1,37 @@
+{
+  "name": "gemdex",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "packageManager": "pnpm@10.11.0",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "dev": "tsx tools/dev.ts",
+    "db:start": "tsx tools/pg.ts",
+    "db:push": "pnpm --filter @gemdex/db push",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "typecheck": "pnpm -r --parallel typecheck",
+    "build": "pnpm -r build",
+    "smoke": "tsx tools/smoke.ts",
+    "handover": "tsx tools/handover.ts",
+    "build:web": "pnpm --filter @gemdex/web build",
+    "build:web:wallet": "cross-env NEXT_PUBLIC_PRIVY_APP_ID=placeholder NEXT_PUBLIC_PRIVY_SIGNER_ID=placeholder pnpm --filter @gemdex/web build",
+    "verify": "pnpm typecheck && pnpm test && pnpm build:web:wallet && pnpm build:web && pnpm smoke"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.0",
+    "tsx": "^4.19.2",
+    "typescript": "^5.7.2",
+    "vitest": "^3.0.0",
+    "embedded-postgres": "^17.2.0-beta.15",
+    "cross-env": "^7.0.3"
+  },
+  "dependencies": {
+    "@gemdex/core": "workspace:*",
+    "@gemdex/db": "workspace:*",
+    "@gemdex/venues": "workspace:*"
+  }
+}

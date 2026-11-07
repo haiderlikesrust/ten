@@ -1,0 +1,354 @@
+@import "tailwindcss";
+
+@theme inline {
+  --color-ink: var(--ink);
+  --color-surface: var(--surface);
+  --color-raised: var(--raised);
+  --color-raised-2: var(--raised-2);
+  --color-line: var(--line);
+  --color-line-strong: var(--line-strong);
+  --color-bone: var(--bone);
+  --color-mute: var(--mute);
+  --color-faint: var(--faint);
+  --color-cherry: var(--cherry);
+  --color-volt: var(--volt);
+  --color-gold: var(--gold);
+  --color-teal: var(--teal);
+  --color-loss: var(--loss);
+  --color-common: var(--r-common);
+  --color-uncommon: var(--r-uncommon);
+  --color-rare: var(--r-rare);
+  --color-epic: var(--r-epic);
+  --color-viz-1: var(--viz-1);
+  --color-viz-2: var(--viz-2);
+  --color-viz-3: var(--viz-3);
+  --color-viz-4: var(--viz-4);
+  --color-viz-5: var(--viz-5);
+  --font-pixel: var(--font-silkscreen);
+  --font-sans: var(--font-figtree);
+  --font-mono: var(--font-geist-mono);
+  --breakpoint-xs: 26rem;
+  --breakpoint-3xl: 1720px;
+}
+
+:root {
+  color-scheme: dark;
+  --ink: #0a0c12;
+  --surface: #12151d;
+  --raised: #1a1e28;
+  --raised-2: #242a36;
+  --line: #232833;
+  --line-strong: #343b4a;
+  --bone: #f7f5f0;
+  --mute: #b4bbc8;
+  --faint: #8a92a3;
+  --cherry: #f03e45;
+  --volt: #ffcc33;
+  --gold: #ffcc33;
+  --teal: #2fd4a7;
+  --loss: #ff6b72;
+  --r-common: #a7b0c0;
+  --r-uncommon: #4fd48a;
+  --r-rare: #5aa9ff;
+  --r-epic: #bb8eff;
+  --on-volt: #1a1503;
+  --viz-1: #3987e5;
+  --viz-2: #d95926;
+  --viz-3: #199e70;
+  --viz-4: #c98500;
+  --viz-5: #d55181;
+  --shadow: none;
+  --shadow-lift: 0 16px 40px -12px rgb(0 0 0 / 0.7);
+  --page-glow: none;
+}
+
+:root[data-theme="light"] {
+  color-scheme: light;
+  --ink: #f3f1ea;
+  --surface: #ffffff;
+  --raised: #f5f3ed;
+  --raised-2: #eae7dd;
+  --line: #e7e3d9;
+  --line-strong: #d4cfc1;
+  --bone: #15171c;
+  --mute: #4b515e;
+  --faint: #6c7280;
+  --cherry: #dc2b33;
+  --volt: #ffc61a;
+  --gold: #8f6200;
+  --teal: #06806f;
+  --loss: #cf2a33;
+  --r-common: #5f6878;
+  --r-uncommon: #178a50;
+  --r-rare: #1a6fd6;
+  --r-epic: #7443dc;
+  --on-volt: #1a1503;
+  --viz-1: #2a78d6;
+  --viz-2: #eb6834;
+  --viz-3: #1baf7a;
+  --viz-4: #eda100;
+  --viz-5: #e87ba4;
+  --shadow: 0 1px 2px rgb(40 34 20 / 0.05);
+  --shadow-lift: 0 14px 34px -14px rgb(40 34 20 / 0.28);
+  --page-glow: none;
+}
+
+html,
+body {
+  height: 100%;
+}
+
+body {
+  background: radial-gradient(color-mix(in srgb, var(--bone) 8%, transparent) 1px, transparent 1.5px) 0 0 / 12px 12px, var(--ink);
+  color: var(--bone);
+  font-family: var(--font-figtree), system-ui, sans-serif;
+  font-size: 14px;
+  line-height: 1.4;
+  -webkit-font-smoothing: antialiased;
+  -webkit-tap-highlight-color: transparent;
+}
+
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--line-strong) transparent;
+}
+
+button,
+a,
+select,
+label {
+  touch-action: manipulation;
+}
+
+button:not(:disabled),
+select {
+  cursor: pointer;
+}
+
+:focus-visible {
+  outline: 2px solid var(--gold);
+  outline-offset: 2px;
+  border-radius: 8px;
+}
+
+select {
+  appearance: none;
+  padding-right: 28px;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='8' height='8' viewBox='0 0 8 8' shape-rendering='crispEdges'%3E%3Cpath fill='%238a92a3' d='M0 2h8v1H7v1H6v1H5v1H3V5H2V4H1V3H0z'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 10px center;
+}
+
+::selection {
+  background: color-mix(in srgb, var(--volt) 40%, transparent);
+}
+
+.pixel {
+  font-family: var(--font-silkscreen), monospace;
+  letter-spacing: 0.01em;
+}
+
+.num {
+  font-family: var(--font-geist-mono), monospace;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: -0.01em;
+}
+
+/* A row or item inside a panel. */
+.tile {
+  position: relative;
+  background: var(--raised);
+  border: 1px solid transparent;
+  transition: background-color 0.15s, border-color 0.15s, transform 0.15s, box-shadow 0.15s;
+}
+
+@media (hover: hover) {
+  .tile:hover {
+    background: var(--raised-2);
+    border-color: var(--line-strong);
+  }
+
+  .lift:hover {
+    transform: translateY(-2px);
+    box-shadow: var(--shadow-lift);
+  }
+}
+
+.rule {
+  border-top: 1px solid var(--line);
+}
+
+/*
+ * Stepped pixel corners, the shape of the whole app. Panels draw theirs on two layers behind
+ * the content, so anything inside can still open past the edge. Smaller parts are simply cut.
+ */
+@layer base {
+  .px-box,
+  .slab {
+    --s: 3px;
+    --px-line: var(--line-strong);
+    --px-fill: var(--surface);
+    position: relative;
+    isolation: isolate;
+  }
+
+  .slab {
+    --px-line: var(--line);
+  }
+}
+
+.px-box::before,
+.px-box::after,
+.slab::before,
+.slab::after {
+  content: "";
+  position: absolute;
+  z-index: -1;
+}
+
+.px-box::before,
+.slab::before {
+  inset: 0;
+  background: var(--px-line);
+}
+
+.px-box::after,
+.slab::after {
+  inset: 2px;
+  background: var(--px-fill);
+}
+
+.px-box::before,
+.px-box::after,
+.slab::before,
+.slab::after,
+.px-cut,
+.tile {
+  clip-path: polygon(
+    0 calc(var(--s) * 2), var(--s) calc(var(--s) * 2), var(--s) var(--s), calc(var(--s) * 2) var(--s), calc(var(--s) * 2) 0,
+    calc(100% - var(--s) * 2) 0, calc(100% - var(--s) * 2) var(--s), calc(100% - var(--s)) var(--s), calc(100% - var(--s)) calc(var(--s) * 2), 100% calc(var(--s) * 2),
+    100% calc(100% - var(--s) * 2), calc(100% - var(--s)) calc(100% - var(--s) * 2), calc(100% - var(--s)) calc(100% - var(--s)), calc(100% - var(--s) * 2) calc(100% - var(--s)), calc(100% - var(--s) * 2) 100%,
+    calc(var(--s) * 2) 100%, calc(var(--s) * 2) calc(100% - var(--s)), var(--s) calc(100% - var(--s)), var(--s) calc(100% - var(--s) * 2), 0 calc(100% - var(--s) * 2)
+  );
+}
+
+.px-cut,
+.tile {
+  --s: 2px;
+}
+
+/* A cut shape would clip an outside focus ring, so these draw it inside. */
+.px-cut:focus-visible,
+.tile:focus-visible {
+  outline-offset: -2px;
+}
+
+/* The current page sits in a recessed window, like a handheld screen. */
+.px-well {
+  --s: 2px;
+  --px-line: var(--line);
+  --px-fill: var(--ink);
+}
+
+/* The menu cursor hops between pages in steps, the way handheld menus move. */
+@keyframes zoomin {
+  from { transform: scale(0.97); opacity: 0; }
+  to { transform: none; opacity: 1; }
+}
+.zoom-in { animation: zoomin 0.1s ease-out; }
+
+.dock-cursor {
+  transition: transform 0.14s steps(4), opacity 0.1s;
+}
+
+.no-scrollbar {
+  scrollbar-width: none;
+}
+
+.no-scrollbar::-webkit-scrollbar {
+  display: none;
+}
+
+/* Horizontal strips fade at the edges, so it is clear there is more to swipe to. */
+.fade-x {
+  -webkit-mask-image: linear-gradient(90deg, transparent, #000 14px, #000 calc(100% - 14px), transparent);
+  mask-image: linear-gradient(90deg, transparent, #000 14px, #000 calc(100% - 14px), transparent);
+}
+
+/* Pulse board: columns that fit on wide screens and swipe on narrow ones. */
+.board {
+  display: grid;
+  grid-auto-flow: column;
+  grid-auto-columns: minmax(344px, 1fr);
+  gap: 8px;
+  overflow-x: auto;
+  scroll-snap-type: x proximity;
+  overscroll-behavior-x: contain;
+}
+
+.board > * {
+  scroll-snap-align: start;
+}
+
+@media (max-width: 639px) {
+  .board {
+    grid-auto-columns: 100%;
+    scroll-padding-inline: 8px;
+    scroll-snap-type: x mandatory;
+  }
+}
+
+/* Soft colored wash behind a tile, used for rarity. */
+.wash-common { background-image: linear-gradient(120deg, color-mix(in srgb, var(--r-common) 7%, transparent), transparent 60%); }
+.wash-uncommon { background-image: linear-gradient(120deg, color-mix(in srgb, var(--r-uncommon) 11%, transparent), transparent 60%); }
+.wash-rare { background-image: linear-gradient(120deg, color-mix(in srgb, var(--r-rare) 14%, transparent), transparent 60%); }
+.wash-epic { background-image: linear-gradient(120deg, color-mix(in srgb, var(--r-epic) 18%, transparent), transparent 60%); }
+
+@keyframes rowin {
+  from { background-color: color-mix(in srgb, var(--volt) 18%, transparent); }
+  to { background-color: transparent; }
+}
+.row-new { animation: rowin 1.6s ease-out; }
+
+@keyframes rip {
+  0% { transform: translateY(16px) scale(0.92) rotate(-2deg); opacity: 0; }
+  60% { transform: translateY(-4px) scale(1.02) rotate(0.5deg); opacity: 1; }
+  100% { transform: none; opacity: 1; }
+}
+.reveal { animation: rip 0.42s cubic-bezier(0.2, 0.8, 0.2, 1) both; }
+
+@keyframes flash {
+  0% { opacity: 0.85; }
+  100% { opacity: 0; }
+}
+.win-flash { animation: flash 0.55s ease-out both; }
+
+@keyframes toastin {
+  from { transform: translateY(10px); opacity: 0; }
+  to { transform: none; opacity: 1; }
+}
+.toast { animation: toastin 0.18s ease-out; }
+
+@keyframes sheetin {
+  from { transform: translateY(24px); opacity: 0; }
+  to { transform: none; opacity: 1; }
+}
+.sheet { animation: sheetin 0.2s cubic-bezier(0.2, 0.8, 0.2, 1); }
+
+@keyframes pulse-dot {
+  50% { opacity: 0.35; }
+}
+.live-dot { animation: pulse-dot 1.4s ease-in-out infinite; }
+
+@keyframes snipe-glow {
+  50% { box-shadow: 0 0 0 4px color-mix(in srgb, var(--volt) 22%, transparent); }
+}
+.snipe-glow { animation: snipe-glow 1.8s ease-in-out infinite; }
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}

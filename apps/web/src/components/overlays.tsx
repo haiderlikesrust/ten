@@ -175,6 +175,8 @@ export function CommandPalette() {
     router.push(href);
   };
   const pages = PAGES.filter(([label]) => label.toLowerCase().includes(text.toLowerCase()));
+  const query = text.trim().toLowerCase();
+  const tourMatch = !query || ["tour", "how it works", "help", "guide", BRAND.name.toLowerCase()].some((word) => word.startsWith(query) || query.includes(word));
   const cards = search.data?.rows ?? [];
   return (
     <Modal onClose={() => setOpen(false)} label="Search" wide>
@@ -196,6 +198,12 @@ export function CommandPalette() {
               <span className="num w-16 text-right font-semibold text-teal">{money(row.price, true)}</span>
             </button>
           ))}
+          {tourMatch ? (
+            <button type="button" onClick={() => { setOpen(false); useUi.getState().setTourOpen(true); }} className="flex h-10 w-full items-center justify-between px-cut px-3 text-left font-medium hover:bg-raised">
+              How {BRAND.name} works
+              <ArrowRight size={15} className="text-faint" aria-hidden="true" />
+            </button>
+          ) : null}
           {pages.map(([label, href]) => (
             <button key={href} type="button" onClick={() => go(href)} className="flex h-10 w-full items-center justify-between px-cut px-3 text-left font-medium hover:bg-raised">
               {label}

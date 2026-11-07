@@ -25,6 +25,7 @@ interface UiState {
   reveal: Reveal | null;
   connectOpen: boolean;
   paletteOpen: boolean;
+  tourOpen: boolean;
   /** Set by the wallet bridge when real sign-in is configured. */
   wallet: { login: () => void; exportKey: () => Promise<void>; signOut: () => Promise<void>; withdraw: (to: string, amount: number) => Promise<void>; signWithMain: (base64: string) => Promise<string> } | null;
   theme: "dark" | "light";
@@ -33,6 +34,7 @@ interface UiState {
   setReveal: (reveal: Reveal | null) => void;
   setConnectOpen: (open: boolean) => void;
   setPaletteOpen: (open: boolean) => void;
+  setTourOpen: (open: boolean) => void;
   setTheme: (theme: "dark" | "light") => void;
 }
 
@@ -43,6 +45,7 @@ export const useUi = create<UiState>((set) => ({
   reveal: null,
   connectOpen: false,
   paletteOpen: false,
+  tourOpen: false,
   theme: "dark",
   wallet: null,
   toast: (toast) => {
@@ -54,6 +57,7 @@ export const useUi = create<UiState>((set) => ({
   setReveal: (reveal) => set({ reveal }),
   setConnectOpen: (connectOpen) => set({ connectOpen }),
   setPaletteOpen: (paletteOpen) => set({ paletteOpen }),
+  setTourOpen: (tourOpen) => set({ tourOpen }),
   setTheme: (theme) => {
     document.documentElement.dataset.theme = theme;
     try {

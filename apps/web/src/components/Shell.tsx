@@ -2,7 +2,7 @@
 
 import { BRAND } from "@gemdex/core";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { Bot, FileText, Gift, LayoutGrid, LogOut, Moon, Radar, Settings2, Sun, Wallet, type LucideIcon } from "lucide-react";
+import { Bot, Compass, FileText, Gift, LayoutGrid, LogOut, Moon, Radar, Settings2, Sun, Wallet, type LucideIcon } from "lucide-react";
 import dynamic from "next/dynamic";
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
@@ -17,6 +17,7 @@ import { useNow, useUi } from "@/lib/ui";
 import { Logo, Sheet } from "./bits";
 import { PixelIcon, type PixelName } from "./pixel";
 import { CommandPalette, ConnectModal, RevealModal, Toasts } from "./overlays";
+import { Tour } from "./Tour";
 
 /** Only loaded when real sign-in is configured, so paper mode never ships wallet code. */
 const WalletBridge = process.env.NEXT_PUBLIC_PRIVY_APP_ID ? dynamic(() => import("./WalletBridge"), { ssr: false }) : () => null;
@@ -162,8 +163,9 @@ function PhoneNav({ onMore }: { onMore: () => void }) {
 function ModeBadge() {
   const meta = useMeta();
   const mode = meta.data?.mode;
-  if (!mode) return null;
-  return <span className={`pixel inline-flex h-[18px] shrink-0 items-center px-1 text-[10px] uppercase leading-none ${mode === "mainnet" ? "bg-loss/15 text-loss" : "text-gold"}`} title={mode === "paper" ? "Simulated money, real market data" : mode}>{mode}</span>;
+  // A marker for the test modes (paper, devnet). Mainnet is the real site, so it shows nothing.
+  if (!mode || mode === "mainnet") return null;
+  return <span className={`pixel inline-flex h-[18px] shrink-0 items-center px-1 text-[10px] uppercase leading-none text-gold`} title={mode === "paper" ? "Simulated money, real market data" : mode}>{mode}</span>;
 }
 
 function ThemeButton({ wide }: { wide?: boolean }) {
@@ -330,7 +332,8 @@ function StatusBar() {
         <kbd className="num ml-2 rounded bg-bone/[0.07] px-1 text-[11px]">1-8</kbd> pages
       </span>
       <a href="https://www.tradingview.com/" target="_blank" rel="noreferrer noopener" className="ml-2 hidden hover:text-bone xl:inline">Charts by TradingView</a>
-      <Link href="/terms" className="ml-auto hidden items-center gap-1 hover:text-bone md:inline-flex xl:ml-2"><FileText size={12} aria-hidden="true" /> Terms</Link>
+      <button type="button" onClick={() => useUi.getState().setTourOpen(true)} className="ml-auto hidden items-center gap-1 hover:text-bone md:inline-flex xl:ml-2"><Compass size={12} aria-hidden="true" /> Tour</button>
+      <Link href="/terms" className="hidden items-center gap-1 hover:text-bone md:inline-flex"><FileText size={12} aria-hidden="true" /> Terms</Link>
       <span className="ml-auto md:ml-0"><ThemeButton /></span>
     </footer>
   );
@@ -352,6 +355,8 @@ function Hotkeys() {
       }
       const target = event.target as HTMLElement;
       if (["INPUT", "TEXTAREA", "SELECT"].includes(target.tagName) || event.ctrlKey || event.metaKey || event.altKey) return;
+      // Behind an open dialog (the tour, a reveal), S must not buy and 1-8 must not change page.
+      if (document.querySelector('[aria-modal="true"]')) return;
       if (event.key.toLowerCase() === "s" && newest) {
         void snipe(newest);
         return;
@@ -380,6 +385,7 @@ function MoreSheet({ onClose }: { onClose: () => void }) {
         {NAV.filter((item) => !PHONE_TABS.includes(item)).map(({ href, label, icon }) => (
           <Link key={href} href={href} onClick={onClose} className={menuItem}><PixelIcon name={icon} /> {label}</Link>
         ))}
+        <button type="button" className={menuItem} onClick={() => { onClose(); useUi.getState().setTourOpen(true); }}><Compass size={16} aria-hidden="true" /> How {BRAND.name} works</button>
         <Link href="/terms" onClick={onClose} className={menuItem}><FileText size={16} aria-hidden="true" /> Terms and risks</Link>
         <div className="rule my-1" />
         {me ? <MenuLinks onClose={onClose} /> : (
@@ -441,6 +447,7 @@ export function Shell({ children }: { children: ReactNode }) {
       <RevealModal />
       <ConnectModal />
       <CommandPalette />
+      <Tour />
     </div>
   );
 }

@@ -6,7 +6,7 @@ Tenner runs as three Dokploy **Applications** built from the one [`Dockerfile`](
 |---|---|---|---|---|
 | **Database** `tenner-db` | PostgreSQL 17 | | none | Listings, drops, orders, the ledger, settings |
 | **Application** `tenner-web` | `web` | 3010 | `tenner.trade` | The Next.js site |
-| **Application** `tenner-gateway` | `gateway` | 4010 | `api.tenner.trade` | The API and the live stream (websocket) |
+| **Application** `tenner-gateway` | `gateway` | 4010 | `tenner.trade/gateway` | The API and the live stream (websocket) |
 | **Application** `tenner-worker` | `worker` | none | none | Drops, Pulse prices, orders, chain sends, ingest |
 
 ## Why Applications and not one Compose service

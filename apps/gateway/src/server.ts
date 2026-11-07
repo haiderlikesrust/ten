@@ -50,7 +50,10 @@ function listingDto(row: typeof listings.$inferSelect) {
 export async function buildServer(opts: ServerOptions) {
   const { database, mode } = opts;
   const { db, sql: raw } = database;
-  const app = Fastify({ logger: false, bodyLimit: 64 * 1024 });
+  // Behind Traefik every request comes from the proxy. TRUST_PROXY=true reads the visitor's address from
+  // X-Forwarded-For, so the rate limit counts each visitor, not everyone together. Only set it when the
+  // gateway is reachable through the proxy alone, as it is on Dokploy.
+  const app = Fastify({ logger: false, bodyLimit: 64 * 1024, trustProxy: process.env.TRUST_PROXY === "true" });
   const cc = new CcRead({ apiKey: process.env.CC_API_KEY });
   const paper: PaperVenue | null = mode === "paper" ? createPaperVenue(db) : null;
   const realtime = new Realtime(database);

@@ -39,7 +39,8 @@ RUN id="${DEPLOYMENT_ID:-$(date +%s)}" \
  && mv .next/static static-build
 
 FROM deps AS gateway
-ENV NODE_ENV=production GATEWAY_HOST=0.0.0.0 GATEWAY_PORT=4010 DRAIN_DELAY_MS=1500
+# TRUST_PROXY: Traefik is the only way in, so its X-Forwarded-For is the visitor's real address.
+ENV NODE_ENV=production GATEWAY_HOST=0.0.0.0 GATEWAY_PORT=4010 DRAIN_DELAY_MS=1500 TRUST_PROXY=true
 USER node
 EXPOSE 4010
 HEALTHCHECK --interval=5s --timeout=3s --start-period=60s --retries=3 \

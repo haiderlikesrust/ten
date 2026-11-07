@@ -42,7 +42,10 @@ On a Compose deploy, Docker stops the old containers and only then starts the ne
    - Secrets go in **Environment**, never in Build-time Arguments.
 4. **Domains.** Point both names' DNS at the VPS first.
    - `tenner-web`: add `tenner.trade`, path `/`, container port **3010**, HTTPS with Let's Encrypt. For `www.tenner.trade`, add it the same way and a www-to-non-www redirect under **Advanced → Redirects**.
-   - `tenner-gateway`: add `api.tenner.trade`, path `/`, container port **4010**, HTTPS. Websockets go through Traefik as they are.
+   - `tenner-gateway`, either way works:
+     - **Path on the site's domain (live now, no extra DNS):** add `tenner.trade`, path `/gateway`, **Strip Path** on, container port **4010**, HTTPS. Then `NEXT_PUBLIC_GATEWAY_URL=https://tenner.trade/gateway`.
+     - **Own subdomain:** add an A record for `api.tenner.trade`, then the domain `api.tenner.trade`, path `/`, container port **4010**, HTTPS. Then `NEXT_PUBLIC_GATEWAY_URL=https://api.tenner.trade`.
+     - Websockets go through Traefik either way.
    - `tenner-worker`: no domain.
    - Before you own the domains, Dokploy's generated `traefik.me` domains work for testing. Set `NEXT_PUBLIC_GATEWAY_URL` and `WEB_ORIGIN` to match.
 5. **Zero-downtime settings.** For each application, in **Advanced → Cluster Settings**:
@@ -73,7 +76,7 @@ On a Compose deploy, Docker stops the old containers and only then starts the ne
    - Without it, updates still don't go down, but someone who opened a page just before an update may need to refresh when they next load more code.
    - Optional: a second volume `tenner-web-cache` at `/app/apps/web/.next/cache` keeps resized card photos across updates.
 7. **Deploy** in this order: `tenner-db`, then `tenner-worker` and `tenner-gateway`, then `tenner-web`.
-   - `https://api.tenner.trade/health` should show `"ok": true` and `"mode": "paper"`.
+   - `https://tenner.trade/gateway/health` should show `"ok": true` and `"mode": "paper"`.
    - The worker's log shows `active: this worker holds the lock`.
    - The first start backfills listings and the card pool, so give drops a minute or two.
 8. **Optional:** turn on **Autodeploy** on all three, so every push to `main` deploys the same way.
@@ -83,7 +86,7 @@ On a Compose deploy, Docker stops the old containers and only then starts the ne
 Leave this running while you click **Deploy** on the gateway. It should print only `200`, with an occasional slower response during the hand-over:
 
 ```bash
-while true; do curl -s -o /dev/null -w '%{http_code} %{time_total}s\n' https://api.tenner.trade/meta; sleep 0.5; done
+while true; do curl -s -o /dev/null -w '%{http_code} %{time_total}s\n' https://tenner.trade/gateway/meta; sleep 0.5; done
 ```
 
 When you redeploy the worker, the new container's log shows `standby: another worker is running`, then `active: this worker holds the lock`. The old one logs `released the worker lock`.

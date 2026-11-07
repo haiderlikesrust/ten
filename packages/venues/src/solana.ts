@@ -527,7 +527,7 @@ export async function createSolanaVenue(mode: Mode, db: Db, env: NodeJS.ProcessE
   if (mode === "mainnet" && env.ALLOW_MAINNET !== "I_UNDERSTAND_THIS_MOVES_REAL_MONEY") {
     throw new Error("mainnet is locked. Set ALLOW_MAINNET after reading docs/LAUNCH.md");
   }
-  const rpc = env.SOLANA_RPC_URL ?? (mode === "devnet" ? "https://api.devnet.solana.com" : undefined);
+  const rpc = env.SOLANA_RPC_URL || (mode === "devnet" ? "https://api.devnet.solana.com" : undefined);
   if (!rpc) throw new Error("SOLANA_RPC_URL is required");
   const connection = new Connection(rpc, "confirmed");
   await assertCluster(connection, mode);

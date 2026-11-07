@@ -17,12 +17,12 @@ export interface Database {
 
 export const DEFAULT_DATABASE_URL = "postgres://gemdex:gemdex@127.0.0.1:54329/gemdex";
 
-export function connect(url = process.env.DATABASE_URL ?? DEFAULT_DATABASE_URL, opts: { max?: number } = {}): Database {
+export function connect(url = process.env.DATABASE_URL || DEFAULT_DATABASE_URL, opts: { max?: number } = {}): Database {
   const client = postgres(url, { max: opts.max ?? 20, onnotice: () => {}, idle_timeout: 60 });
   return { db: drizzle(client, { schema }), sql: client, close: () => client.end({ timeout: 5 }) };
 }
 
-export async function runMigrations(url = process.env.DATABASE_URL ?? DEFAULT_DATABASE_URL): Promise<void> {
+export async function runMigrations(url = process.env.DATABASE_URL || DEFAULT_DATABASE_URL): Promise<void> {
   const client = postgres(url, { max: 1, onnotice: () => {} });
   const here = path.dirname(fileURLToPath(import.meta.url));
   // Gateway and worker both migrate on boot, so the lock makes them take turns.

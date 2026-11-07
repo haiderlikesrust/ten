@@ -2,7 +2,7 @@ import type { Db } from "@gemdex/db";
 import { createPaperVenue, type Mode, type Venue } from "@gemdex/venues";
 
 export function modeFromEnv(): Mode {
-  const mode = process.env.GEMDEX_MODE ?? "paper";
+  const mode = process.env.GEMDEX_MODE || "paper";
   if (mode !== "paper" && mode !== "devnet" && mode !== "mainnet") throw new Error(`unknown GEMDEX_MODE ${mode}`);
   return mode;
 }

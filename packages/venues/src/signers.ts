@@ -125,5 +125,5 @@ export async function createSigner(mode: Mode, db: Db, env: NodeJS.ProcessEnv = 
   }
   if (mode === "mainnet") throw new Error("mainnet requires Privy wallets. Local keys are refused.");
   const raw: Partial<Record<Role, string>> = env.GEMDEX_ROLE_KEYS ? JSON.parse(env.GEMDEX_ROLE_KEYS) : {};
-  return new LocalSigner(env.GEMDEX_DEV_SEED ?? "gemdex-devnet", raw);
+  return new LocalSigner(env.GEMDEX_DEV_SEED || "gemdex-devnet", raw);
 }

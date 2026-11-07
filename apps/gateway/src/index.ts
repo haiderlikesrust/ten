@@ -2,15 +2,16 @@ import { connect, runMigrations } from "@gemdex/db";
 import type { Mode } from "@gemdex/venues";
 import { buildServer } from "./server";
 
-const mode = (process.env.GEMDEX_MODE ?? "paper") as Mode;
-const port = Number(process.env.GATEWAY_PORT ?? 4010);
+// Blank counts as unset, so a placeholder waiting to be filled in keeps the default.
+const mode = (process.env.GEMDEX_MODE || "paper") as Mode;
+const port = Number(process.env.GATEWAY_PORT || 4010);
 
 let draining = false;
 
 await runMigrations();
 const database = connect();
-const app = await buildServer({ database, mode, corsOrigin: process.env.WEB_ORIGIN ?? true, draining: () => draining });
-await app.listen({ port, host: process.env.GATEWAY_HOST ?? "127.0.0.1" });
+const app = await buildServer({ database, mode, corsOrigin: process.env.WEB_ORIGIN || true, draining: () => draining });
+await app.listen({ port, host: process.env.GATEWAY_HOST || "127.0.0.1" });
 console.log(`[gateway] listening on ${port} in ${mode} mode`);
 
 /**

@@ -78,7 +78,7 @@ interface LinkedWallet {
 /** Trades a verified Privy session for ours. The trading wallet must have delegated signing. */
 export async function privySession(db: Db, accessToken: string, idToken: string): Promise<{ userId: string } | { error: string }> {
   const { PrivyClient } = await import("@privy-io/server-auth");
-  const privy = new PrivyClient(process.env.NEXT_PUBLIC_PRIVY_APP_ID ?? process.env.PRIVY_APP_ID ?? "", process.env.PRIVY_APP_SECRET ?? "");
+  const privy = new PrivyClient(process.env.NEXT_PUBLIC_PRIVY_APP_ID || process.env.PRIVY_APP_ID || "", process.env.PRIVY_APP_SECRET ?? "");
   const claims = await privy.verifyAuthToken(accessToken).catch(() => null);
   if (!claims) return { error: "Your sign-in has expired" };
   const person = await privy.getUser({ idToken }).catch(() => null);

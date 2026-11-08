@@ -302,9 +302,9 @@ export async function buildServer(opts: ServerOptions) {
 
   app.post("/auth/privy", async (request, reply) => {
     if (mode === "paper") return reply.code(404).send({ error: "Wallet sign-in is off in paper mode" });
-    const { accessToken, idToken } = (request.body ?? {}) as { accessToken?: string; idToken?: string };
-    if (!accessToken || !idToken) return reply.code(400).send({ error: "Missing sign-in tokens" });
-    const result = await privySession(db, accessToken, idToken);
+    const { accessToken } = (request.body ?? {}) as { accessToken?: string };
+    if (!accessToken) return reply.code(400).send({ error: "Missing sign-in token" });
+    const result = await privySession(db, accessToken);
     if ("error" in result) return reply.code(401).send({ error: result.error });
     return { token: await issueSession(result.userId) };
   });

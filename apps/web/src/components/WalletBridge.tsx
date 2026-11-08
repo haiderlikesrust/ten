@@ -1,10 +1,10 @@
 "use client";
 
-import { PrivyProvider, useIdentityToken, usePrivy, useSigners } from "@privy-io/react-auth";
+import { PrivyProvider, usePrivy, useSigners } from "@privy-io/react-auth";
 import { toSolanaWalletConnectors, useExportWallet, useSignAndSendTransaction, useSignTransaction, useWallets } from "@privy-io/react-auth/solana";
 import { useQueryClient } from "@tanstack/react-query";
 import { useEffect, useRef } from "react";
-import { api, setToken } from "@/lib/api";
+import { api, getToken, setToken } from "@/lib/api";
 import { connectStream } from "@/lib/live";
 import { useUi } from "@/lib/ui";
 
@@ -25,7 +25,6 @@ interface LinkedWallet {
 
 function Bridge() {
   const { ready, authenticated, user, login, logout, getAccessToken } = usePrivy();
-  const { identityToken } = useIdentityToken();
   const { addSigners } = useSigners();
   const { exportWallet } = useExportWallet();
   const { wallets } = useWallets();
@@ -39,10 +38,41 @@ function Bridge() {
     (account) => account.type === "wallet" && account.chainType === "solana" && account.walletClientType === "privy",
   );
 
+  /**
+   * Trades the Privy sign-in for a Tenner session, first approving one-click trading if needed. It runs by itself
+   * when there is no Tenner session yet, and again whenever Connect is pressed, so a dismissed approval or a failed
+   * attempt can always be retried.
+   */
+  const finish = useRef<(force?: boolean) => void>(() => {});
+  finish.current = (force = false) => {
+    if (!ready || !authenticated || !embedded?.address || syncing.current) return;
+    if (!force && getToken()) return;
+    syncing.current = true;
+    void (async () => {
+      try {
+        if (!embedded.delegated) {
+          if (!SIGNER_ID) throw new Error("NEXT_PUBLIC_PRIVY_SIGNER_ID is not set");
+          await addSigners({ address: embedded.address!, signers: [{ signerId: SIGNER_ID, policyIds: [] }] });
+        }
+        const accessToken = await getAccessToken();
+        const { token } = await api<{ token: string }>("/auth/privy", { body: { accessToken } });
+        setToken(token);
+        connectStream();
+        await client.invalidateQueries();
+        useUi.getState().setConnectOpen(false);
+      } catch (error) {
+        toast({ tone: "bad", title: "Could not finish sign-in", detail: error instanceof Error ? error.message : String(error) });
+      } finally {
+        syncing.current = false;
+      }
+    })();
+  };
+
   useEffect(() => {
     useUi.setState({
       wallet: {
-        login,
+        // Privy ignores a second login while it is signed in, so then Connect finishes the Tenner side instead.
+        login: () => (authenticated ? finish.current(true) : login()),
         signOut: logout,
         exportKey: () => exportWallet({ address: embedded?.address ?? "" }),
         // Pops the user's own wallet, because only they can move a card it holds.
@@ -64,30 +94,21 @@ function Bridge() {
       },
     });
     return () => useUi.setState({ wallet: null });
-  }, [embedded?.address, exportWallet, login, logout, signAndSendTransaction, signTransaction, wallets]);
+  }, [authenticated, embedded?.address, exportWallet, login, logout, signAndSendTransaction, signTransaction, wallets]);
 
   useEffect(() => {
-    if (!ready || !authenticated || !embedded?.address || !identityToken || syncing.current) return;
-    syncing.current = true;
-    void (async () => {
-      try {
-        if (!embedded.delegated) {
-          if (!SIGNER_ID) throw new Error("NEXT_PUBLIC_PRIVY_SIGNER_ID is not set");
-          await addSigners({ address: embedded.address!, signers: [{ signerId: SIGNER_ID, policyIds: [] }] });
-        }
-        const accessToken = await getAccessToken();
-        const { token } = await api<{ token: string }>("/auth/privy", { body: { accessToken, idToken: identityToken } });
-        setToken(token);
-        connectStream();
-        await client.invalidateQueries();
-        useUi.getState().setConnectOpen(false);
-      } catch (error) {
-        toast({ tone: "bad", title: "Could not finish sign-in", detail: error instanceof Error ? error.message : String(error) });
-      } finally {
-        syncing.current = false;
-      }
-    })();
-  }, [addSigners, authenticated, client, embedded?.address, embedded?.delegated, getAccessToken, identityToken, ready, toast]);
+    finish.current();
+  }, [authenticated, embedded?.address, embedded?.delegated, ready]);
+
+  // Signed in to Privy, but no trading wallet arrived. Say so instead of waiting forever.
+  useEffect(() => {
+    if (!ready || !authenticated || embedded?.address) return;
+    const timer = setTimeout(
+      () => toast({ tone: "bad", title: "Could not finish sign-in", detail: "Privy did not create a trading wallet. Turn on Solana embedded wallets for all users in Privy, then connect again." }),
+      8_000,
+    );
+    return () => clearTimeout(timer);
+  }, [authenticated, embedded?.address, ready, toast]);
 
   return null;
 }

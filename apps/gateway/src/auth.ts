@@ -75,14 +75,20 @@ interface LinkedWallet {
   delegated?: boolean;
 }
 
-/** Trades a verified Privy session for ours. The trading wallet must have delegated signing. */
-export async function privySession(db: Db, accessToken: string, idToken: string): Promise<{ userId: string } | { error: string }> {
+/**
+ * Trades a verified Privy session for ours. The trading wallet must have delegated signing.
+ *
+ * The user is read fresh from Privy rather than from an identity token: a token issued at login still says the
+ * trading wallet is not delegated after the user approves one-click trading a moment later. The site only calls
+ * this when it has no session of ours, so the lookups stay well inside Privy's rate limits.
+ */
+export async function privySession(db: Db, accessToken: string): Promise<{ userId: string } | { error: string }> {
   const { PrivyClient } = await import("@privy-io/server-auth");
   const privy = new PrivyClient(process.env.NEXT_PUBLIC_PRIVY_APP_ID || process.env.PRIVY_APP_ID || "", process.env.PRIVY_APP_SECRET ?? "");
   const claims = await privy.verifyAuthToken(accessToken).catch(() => null);
   if (!claims) return { error: "Your sign-in has expired" };
-  const person = await privy.getUser({ idToken }).catch(() => null);
-  if (!person || person.id !== claims.userId) return { error: "Sign-in did not match" };
+  const person = await privy.getUserById(claims.userId).catch(() => null);
+  if (!person || person.id !== claims.userId) return { error: "Could not read your Privy account. Try again." };
 
   const wallets = (person.linkedAccounts as unknown as LinkedWallet[]).filter((a) => a.type === "wallet" && a.chainType === "solana");
   const embedded = wallets.find((w) => w.walletClientType === "privy");

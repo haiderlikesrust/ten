@@ -202,7 +202,7 @@ describe("$TENR access minimum", () => {
     expect(accessFrom(0, 0, 10)).toMatchObject({ enforced: false, ok: true });
     expect(shareOfSupply(10)).toBe("0.1%");
     expect(shareOfSupply(200)).toBe("2%");
-    expect(accessMessage({ bps: 10 })).toBe("Hold 0.1% of $TENR to buy");
+    expect(accessMessage({ bps: 10 })).toBe("Hold 0.1% of $TENR to use Tenner");
   });
 });
 
@@ -256,5 +256,15 @@ describe("gift draws", () => {
     const wins: Record<string, number> = { a: 0, b: 0, c: 0 };
     for (let i = 0; i < 1000; i++) wins[pickGiftWinner(entries, i.toString(16))!.userId]!++;
     expect(wins).toEqual({ a: 100, b: 300, c: 600 });
+  });
+});
+
+describe("Pulse sale split", () => {
+  it("sends the set share to buyback and burn and the rest back to drops, to the micro", async () => {
+    const { splitSale } = await import("../src/flywheel");
+    expect(splitSale(usd(45), 5_000)).toEqual({ buyback: usd(22.5), drops: usd(22.5) });
+    expect(splitSale(1_000_001, 5_000)).toEqual({ buyback: 500_000, drops: 500_001 });
+    expect(splitSale(usd(45), 10_000)).toEqual({ buyback: usd(45), drops: 0 });
+    expect(splitSale(usd(45), 0)).toEqual({ buyback: 0, drops: usd(45) });
   });
 });

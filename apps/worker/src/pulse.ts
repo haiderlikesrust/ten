@@ -1,5 +1,5 @@
-import { generatePath, priceAt, type Micros, type PathInput } from "@gemdex/core";
-import { and, claimDrop, dropLimits, drops, emit, eq, inArray, paperChain, post, sql, type Drop } from "@gemdex/db";
+import { generatePath, priceAt, splitSale, type Micros, type PathInput } from "@gemdex/core";
+import { and, claimDrop, dropLimits, drops, emit, eq, getSetting, inArray, paperChain, post, sql, type Drop } from "@gemdex/db";
 import type { PaperVenue } from "@gemdex/venues";
 import { mayBuy } from "./access";
 import type { Ctx } from "./ctx";
@@ -42,6 +42,7 @@ async function runLimits(ctx: Ctx, live: Drop[], at: number) {
  */
 async function simulateBuyers(ctx: Ctx, live: Drop[], at: number) {
   const paper = ctx.venue as PaperVenue;
+  const { saleBuybackBps } = await getSetting(ctx.db, "flywheel");
   for (const drop of live) {
     if (drop.kind !== "revealed" || !drop.insuredValue || !drop.opensAt) continue;
     const price = nowPrice(drop, at);
@@ -57,7 +58,9 @@ async function simulateBuyers(ctx: Ctx, live: Drop[], at: number) {
         .where(and(eq(drops.id, drop.id), eq(drops.state, "LIVE")))
         .returning();
       if (rows.length === 0) return null;
-      await post(tx, `sim_sale:${drop.id}`, "sim_sale", [{ account: "world", delta: -price }, { account: "drops", delta: price }]);
+      // Stand-in sales split the way real ones do.
+      const sale = splitSale(price, saleBuybackBps);
+      await post(tx, `sim_sale:${drop.id}`, "sim_sale", [{ account: "world", delta: -price }, { account: "revenue", delta: sale.buyback }, { account: "drops", delta: sale.drops }].filter((leg) => leg.delta !== 0));
       await tx
         .insert(paperChain)
         .values({ account: "drops", micros: price })

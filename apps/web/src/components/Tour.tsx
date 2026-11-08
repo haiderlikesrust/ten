@@ -86,7 +86,7 @@ export function Tour() {
   const steps = useMemo<Array<TourStep | FinalStep>>(() => {
     const last: FinalStep = me
       ? { id: "ready", icon: "star", kicker: "Ready", title: "You're set", body: "Your balance sits at the top right. Press Ctrl K to find any card, or S to buy the newest one on Pulse.", clip: null, cta: null, action: "pulse" }
-      : { id: "start", icon: "star", kicker: "Start", title: "Connect your wallet", body: `${accessBps > 0 ? `Buying takes at least ${shareOfSupply(accessBps)} of $TENR's supply in your wallet. ` : ""}You also get a trading wallet for one-click buys, and the cards you win go to the wallet you connect.`, clip: null, cta: null, action: "connect" };
+      : { id: "start", icon: "star", kicker: "Start", title: "Connect your wallet", body: `${accessBps > 0 ? `Using Tenner takes at least ${shareOfSupply(accessBps)} of $TENR's supply in your wallet. ` : ""}You also get a trading wallet for one-click buys, and the cards you win go to the wallet you connect.`, clip: null, cta: null, action: "connect" };
     return [...TOUR_STEPS, last];
   }, [me, accessBps]);
 

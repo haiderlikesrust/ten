@@ -28,8 +28,8 @@ interface Draw {
 interface Treasury {
   pools: { drops: number; cashback: number; gifts: number; giftReserved: number; revenue: number };
   rules: {
-    accessBps: number; giftHoldBps: number; giftBps: number; giftSpendBps: number; giftIntervalMin: number; giftTiers: number[];
-    activePacksPerHour: number; topBlasters: number; blasterDays: number; claimHours: number; platformFeeBps: number;
+    accessBps: number; giftHoldBps: number; giftBps: number; giftSpendBps: number; saleBuybackBps: number; giftIntervalMin: number; giftTiers: number[];
+    activePacksPerHour: number; topBlasters: number; blasterDays: number; claimHours: number;
   };
   draws: Draw[];
   buybacks: Array<{ id: string; stage: string; usdcIn: number; tenrOut: number | null; burnSig: string | null; at: string }>;
@@ -116,6 +116,7 @@ export default function TreasuryPage() {
 
   const total = t ? t.pools.drops + t.pools.cashback + t.pools.gifts + t.pools.giftReserved + t.pools.revenue : null;
   const giftShare = r ? r.giftBps / 10_000 : 0.2;
+  const burnShare = Math.round((r?.saleBuybackBps ?? 5_000) / 100);
   const split = [
     { label: "Pulse drops", share: Math.max(0, 1 - CASHBACK_SHARE - giftShare), pool: t?.pools.drops, tone: "bg-gold", text: "text-gold" },
     { label: "Cashback", share: CASHBACK_SHARE, pool: t?.pools.cashback, tone: "bg-teal", text: "text-teal" },
@@ -133,7 +134,7 @@ export default function TreasuryPage() {
   return (
     <div className="h-full overflow-y-auto">
       <div className="mx-auto flex w-full max-w-[1240px] flex-col gap-2 px-2 pb-2 sm:px-3">
-        <PageHeader title="Treasury" subtitle={`Every dollar of trading fees, where it goes, and how ${BRAND.tokenTicker} holders win it back.`} />
+        <PageHeader title="Treasury" subtitle={`Where trading fees and Pulse sales go: drops, cashback, gifts, and burning ${BRAND.tokenTicker}.`} />
 
         <div className="grid gap-2 lg:grid-cols-[minmax(0,1fr)_360px]">
           <section className="slab p-4 sm:p-5" aria-label="Treasury">
@@ -151,7 +152,21 @@ export default function TreasuryPage() {
                 </div>
               ))}
             </div>
-            {t && t.pools.revenue > 0 ? <p className="mt-3 text-[12.5px] text-faint"><b className="num text-bone">{money(t.pools.revenue, true)}</b> of platform fees waiting for the next buyback.</p> : null}
+            <div className="mt-5 text-[12.5px] text-faint">Every $1 winners pay on Pulse</div>
+            <div className="mt-1.5 flex h-4 gap-[3px]" role="presentation">
+              <span className="bg-gold" style={{ width: `${100 - burnShare}%` }} />
+              <span className="bg-cherry" style={{ width: `${burnShare}%` }} />
+            </div>
+            <div className="mt-3 grid grid-cols-1 gap-2 sm:grid-cols-2">
+              <div className="px-cut bg-raised px-3 py-2.5">
+                <div className="flex items-center gap-1.5 text-[12.5px] text-mute"><span className="h-2 w-2 bg-gold" />Back into Pulse drops <span className="num ml-auto font-semibold text-gold">{100 - burnShare}%</span></div>
+                <div className="mt-1 text-[12.5px] text-faint">Keeps cards dropping.</div>
+              </div>
+              <div className="px-cut bg-raised px-3 py-2.5">
+                <div className="flex items-center gap-1.5 text-[12.5px] text-mute"><span className="h-2 w-2 bg-cherry" />Buyback and burn <span className="num ml-auto font-semibold text-cherry">{burnShare}%</span></div>
+                <div className="mt-1 text-[12.5px] text-faint">Waiting for the next buyback <b className="num text-bone">{money(t?.pools.revenue, true)}</b></div>
+              </div>
+            </div>
           </section>
 
           <section className="slab flex flex-col p-4 sm:p-5" aria-label="Next gift draw">
@@ -187,7 +202,7 @@ export default function TreasuryPage() {
         </section>
         <div className="px-box flex items-center gap-2.5 px-3.5 py-2.5 text-[13px] text-mute">
           <span className="text-gold"><PixelIcon name="star" /></span>
-          <span>Buying, opening packs and claiming gifts take at least <b className="text-bone">{r ? shareOfSupply(r.accessBps) : "–"}</b> of {BRAND.tokenTicker}&apos;s supply, checked live every time. Winners have {r?.claimHours ?? 24} hours to claim.</span>
+          <span>Every feature on {BRAND.name} (Pulse, packs, Market, Auto-Buy and gifts) takes at least <b className="text-bone">{r ? shareOfSupply(r.accessBps) : "–"}</b> of {BRAND.tokenTicker}&apos;s supply, checked live every time. Winners have {r?.claimHours ?? 24} hours to claim.</span>
         </div>
 
         <div className="grid gap-2 lg:grid-cols-[minmax(0,1fr)_360px]">
@@ -208,7 +223,7 @@ export default function TreasuryPage() {
               <div className="px-cut bg-raised px-3 py-2.5"><div className="text-[12px] text-faint">Spent</div><div className="num text-[18px] font-semibold">{money(t?.totals.usdcSpent, true)}</div></div>
               <div className="px-cut bg-raised px-3 py-2.5"><div className="text-[12px] text-faint">Burned</div><div className="num text-[18px] font-semibold">{tokens.format(t?.totals.tenrBurned ?? 0)}</div></div>
             </div>
-            <p className="px-3.5 pb-3 text-[13px] text-mute">A {r ? shareOfSupply(r.platformFeeBps) : "1%"} fee on Market buys and packs buys {BRAND.tokenTicker} on a schedule, whatever the price, and burns it.</p>
+            <p className="px-3.5 pb-3 text-[13px] text-mute">{burnShare}% of every dollar winners pay on Pulse, for cards and sealed packs, buys {BRAND.tokenTicker} at market every few minutes and burns it. The rest refills the drops pool.</p>
             <ul className="border-t border-line">
               {(t?.buybacks ?? []).map((b) => (
                 <li key={b.id} className="flex items-center gap-3 border-t border-line px-3.5 py-2 text-[13px] first:border-t-0">

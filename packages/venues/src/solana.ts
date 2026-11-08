@@ -7,7 +7,7 @@ import { createNoopSigner, publicKey as umiKey } from "@metaplex-foundation/umi"
 import { createUmi } from "@metaplex-foundation/umi-bundle-defaults";
 import { fromWeb3JsPublicKey, toWeb3JsInstruction } from "@metaplex-foundation/umi-web3js-adapters";
 import {
-  AccountLayout, TOKEN_PROGRAM_ID, createAssociatedTokenAccountIdempotentInstruction, createTransferCheckedInstruction, getAssociatedTokenAddressSync,
+  AccountLayout, TOKEN_PROGRAM_ID, createAssociatedTokenAccountIdempotentInstruction, createBurnCheckedInstruction, createTransferCheckedInstruction, getAssociatedTokenAddressSync,
 } from "@solana/spl-token";
 import {
   ComputeBudgetProgram, Connection, PublicKey, SystemProgram, Transaction, TransactionInstruction, TransactionMessage, VersionedMessage, VersionedTransaction,
@@ -414,7 +414,72 @@ class SolanaChain implements ChainVenue {
         return this.own(await this.collectIx(), []);
       case "swap":
         return this.swap(op.cardsIn, op.minOut);
+      case "buyTenr":
+        return this.buyTenr(op.from, op.usdcIn, op.minOut);
+      case "burnTenr":
+        return this.burnTenr(op.owner, op.memo);
     }
+  }
+
+  // Buyback and burn (docs/FLYWHEEL.md) ------------------------------------------
+
+  private tenrMint(): PublicKey {
+    if (!this.config.tokenMint) throw new Error("GEMDEX_TOKEN_MINT is not set");
+    return this.config.tokenMint;
+  }
+
+  /** $TENR's decimals and token program. pump.fun mints can be classic SPL Token or Token-2022. */
+  async tenrInfo(): Promise<{ decimals: number; program: PublicKey }> {
+    const mint = this.tenrMint();
+    const account = await this.config.connection.getParsedAccountInfo(mint);
+    if (!account.value) throw new Error("the $TENR mint was not found");
+    const data = account.value.data as { parsed?: { info?: { decimals?: number } } };
+    return { decimals: Number(data.parsed?.info?.decimals ?? 6), program: account.value.owner };
+  }
+
+  async quoteTenr(usdcIn: Micros, taker?: string) {
+    const params = new URLSearchParams({ inputMint: this.usdc.toBase58(), outputMint: this.tenrMint().toBase58(), amount: String(usdcIn) });
+    if (taker) params.set("taker", taker);
+    return this.jupiter(`/order?${params}`);
+  }
+
+  private async buyTenr(from: Party, usdcIn: Micros, minOut: number): Promise<PreparedTx> {
+    const { decimals } = await this.tenrInfo();
+    const order = await this.quoteTenr(usdcIn, (await this.address(from)).toBase58());
+    const out = Number(order.outAmount ?? 0) / 10 ** decimals;
+    if (!order.transaction) throw new Error(`jupiter returned no transaction: ${String(order.errorMessage ?? "unknown")}`);
+    if (out < minOut) throw new Error(`buyback quote ${out} $TENR is below the minimum ${minOut}`);
+    const tx = await this.config.signer.sign(VersionedTransaction.deserialize(fromB64(String(order.transaction))), from);
+    return this.envelope({
+      via: "jupiter", b64: toB64(tx.serialize()), signature: bs58.encode(tx.signatures[0]!), requestId: String(order.requestId), blockhash: tx.message.recentBlockhash,
+      lastValidBlockHeight: Number(order.lastValidBlockHeight ?? (await this.config.connection.getBlockHeight()) + 150),
+    });
+  }
+
+  private async burnTenr(owner: Party, memo: string): Promise<PreparedTx> {
+    const mint = this.tenrMint();
+    const { decimals, program } = await this.tenrInfo();
+    const wallet = await this.address(owner);
+    const ata = getAssociatedTokenAddressSync(mint, wallet, true, program);
+    const balance = await this.config.connection.getTokenAccountBalance(ata);
+    const amount = BigInt(balance.value.amount);
+    if (amount === 0n) throw new TxRefused("there is no $TENR to burn");
+    return this.own([createBurnCheckedInstruction(ata, mint, wallet, amount, decimals, [], program), this.memo(memo)], [owner]);
+  }
+
+  /** Whole $TENR a party holds. */
+  async tenrHeldBy(party: Party): Promise<number> {
+    return this.tokenBalance((await this.address(party)).toBase58());
+  }
+
+  /** Whole $TENR that arrived for a party in a transaction, read from its balances rather than the quote. */
+  async tenrReceivedBy(party: Party, signature: string): Promise<number> {
+    const owner = (await this.address(party)).toBase58();
+    const mint = this.tenrMint().toBase58();
+    const tx = await this.config.connection.getTransaction(signature, { maxSupportedTransactionVersion: 0, commitment: "confirmed" });
+    const amount = (list: typeof tx extends null ? never : NonNullable<NonNullable<typeof tx>["meta"]>["postTokenBalances"]) =>
+      Number(list?.find((b) => b.owner === owner && b.mint === mint)?.uiTokenAmount.uiAmountString ?? 0);
+    return amount(tx?.meta?.postTokenBalances) - amount(tx?.meta?.preTokenBalances);
   }
 
   /**
@@ -846,6 +911,20 @@ class SolanaFees implements FeeVenue {
 
   usdcReceived(signature: string) {
     return this.chain.usdcReceivedBy(role("fee"), signature);
+  }
+
+  async tenrQuote(usdcIn: Micros): Promise<number> {
+    if (usdcIn <= 0) return 0;
+    const [{ decimals }, order] = await Promise.all([this.chain.tenrInfo(), this.chain.quoteTenr(usdcIn)]);
+    return Number(order.outAmount ?? 0) / 10 ** decimals;
+  }
+
+  tenrReceived(signature: string) {
+    return this.chain.tenrReceivedBy(role("drops"), signature);
+  }
+
+  tenrHeld(): Promise<number> {
+    return this.chain.tenrHeldBy(role("drops"));
   }
 }
 

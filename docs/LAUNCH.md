@@ -97,8 +97,7 @@ See [FLYWHEEL.md](FLYWHEEL.md).
 
 - [ ] **Legal review of gift draws.** A random prize that needs a token purchase to enter can be a lottery. Get counsel's sign-off, and add a free way to enter if they require one, before draws run with real money. Until then, keep `giftsEnabled` off on mainnet in Admin → Flywheel.
 - [ ] Put the team's wallets in Admin → Flywheel → "Wallets that can never win".
-- [ ] Privy policy for the Fee wallet: allow SPL Token `Burn` on the $TENR mint (buyback and burn).
-- [ ] Privy policy for trading wallets: allow USDC `TransferChecked` to the Fee wallet's USDC account, up to the platform fee on your highest pack price (the platform fee).
+- [ ] Privy policy for the Drops wallet: allow Jupiter's swap program, and SPL Token `Burn` on the $TENR mint (buyback and burn of Pulse sales).
 - [ ] Check the access minimum on devnet with a wallet just under and just over 0.1% of supply.
 
 A public paper demo must set `PAPER_OPEN_ADMIN=false`, or anyone can open Admin.

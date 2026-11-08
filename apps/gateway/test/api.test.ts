@@ -212,7 +212,7 @@ describe("$TENR access minimum", () => {
     const headers = await login("no-tenr", 0);
     const bought = await buy(headers);
     expect(bought.statusCode).toBe(403);
-    expect(bought.json()).toMatchObject({ code: "access", error: "Hold 0.1% of $TENR to buy" });
+    expect(bought.json()).toMatchObject({ code: "access", error: "Hold 0.1% of $TENR to use Tenner" });
     expect((await open(headers)).statusCode).toBe(403);
     const claim = await app.inject({ method: "POST", url: `/drops/${randomUUID()}/claim`, headers, payload: { idempotencyKey: randomUUID() } });
     expect(claim.json()).toMatchObject({ status: "rejected", reason: "access" });

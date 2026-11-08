@@ -2,12 +2,13 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { randomUUID } from "node:crypto";
 import { giftGroupOrder, pickGiftWinner, giftEntriesText, usd, type GiftGroup } from "@gemdex/core";
-import { balanceOf, ccPacks, eq, giftDraws, holderStreaks, holdings, machines, orders, placeOrder, poolCards, post, setSetting, userAccount, users } from "@gemdex/db";
+import { balanceOf, buybacks, ccPacks, eq, giftDraws, holderStreaks, holdings, machines, orders, placeOrder, poolCards, post, setSetting, userAccount, users } from "@gemdex/db";
 import { CcRead, createPaperVenue, type PaperVenue } from "@gemdex/venues";
 import { paperTokenReader } from "@gemdex/venues/holdings";
 import { createHash } from "node:crypto";
 import { tickGiftDraws, tickHolderStreaks } from "../src/gifts";
 import { tickOrders } from "../src/orders";
+import { tickBuyback } from "../src/buyback";
 import type { Ctx } from "../src/ctx";
 import { createTestDb, type TestDb } from "../../../tools/testdb";
 
@@ -190,5 +191,67 @@ describe("gift draws", () => {
       and memo not in (select memo from orders where params ? 'gift' and memo is not null)`;
     const all = await t.sql<{ n: number }[]>`select count(*)::int as n from cc_packs where user_id = ${player} and drop_id is null and state in ('paid', 'opened')`;
     expect(all[0]!.n - own[0]!.n).toBe(1);
+  });
+});
+
+describe("buyback and burn", () => {
+  async function addRevenue(amount: number) {
+    await t.db.transaction((tx) => post(tx, `test_sale:${randomUUID()}`, "test", [{ account: "world", delta: -amount }, { account: "revenue", delta: amount }]));
+  }
+  const paperTenr = async () => venue.fees.tenrHeld();
+
+  beforeEach(async () => {
+    await t.sql`delete from buybacks`;
+  });
+
+  it("waits until Pulse sales add up to the minimum", async () => {
+    const pool = await balanceOf(t.db, "revenue");
+    if (pool < usd(10)) await addRevenue(usd(10) - pool);
+    await tickBuyback(ctx);
+    expect((await t.db.select().from(buybacks)).length).toBe(0);
+  });
+
+  it("spends every dollar of Pulse sales on $TENR, burns it, and books it", async () => {
+    await addRevenue(usd(100) - (await balanceOf(t.db, "revenue")));
+    const chainBefore = await venue.chainBalance("drops");
+    for (let i = 0; i < 10; i++) {
+      await tickBuyback(ctx);
+      if ((await t.db.select().from(buybacks))[0]?.stage === "DONE") break;
+    }
+    const [run] = await t.db.select().from(buybacks);
+    expect(run).toMatchObject({ stage: "DONE", usdcIn: usd(100), tenrOut: 1_000_000 });
+    expect(run!.swapSig).toBeTruthy();
+    expect(run!.burnSig).toBeTruthy();
+    expect(await balanceOf(t.db, "revenue")).toBe(0);
+    expect(await balanceOf(t.db, "buyback_inflight")).toBe(0);
+    // The USDC left the Drops wallet, and nothing bought is left unburned.
+    expect(await venue.chainBalance("drops")).toBe(chainBefore - usd(100));
+    expect(await paperTenr()).toBe(0);
+  });
+
+  it("runs once per interval, and sales during a run wait for the next one", async () => {
+    await addRevenue(usd(40));
+    const start = Date.now();
+    for (let i = 0; i < 10; i++) await tickBuyback(ctx, start);
+    await addRevenue(usd(40));
+    await tickBuyback(ctx, start + 60_000);
+    expect((await t.db.select().from(buybacks)).length).toBe(1);
+    expect(await balanceOf(t.db, "revenue")).toBe(usd(40));
+    for (let i = 0; i < 10; i++) await tickBuyback(ctx, start + 16 * 60_000);
+    const runs = await t.db.select().from(buybacks);
+    expect(runs.length).toBe(2);
+    expect(runs.every((r) => r.stage === "DONE")).toBe(true);
+    expect(await balanceOf(t.db, "revenue")).toBe(0);
+  });
+
+  it("stays off when buybacks are turned off", async () => {
+    await addRevenue(usd(50));
+    await setSetting(t.db, "flywheel", { buybackEnabled: false });
+    try {
+      await tickBuyback(ctx, Date.now() + 3_600_000);
+      expect((await t.db.select().from(buybacks)).length).toBe(0);
+    } finally {
+      await setSetting(t.db, "flywheel", { buybackEnabled: true });
+    }
   });
 });

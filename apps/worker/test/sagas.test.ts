@@ -72,7 +72,7 @@ async function assertBooksBalance(venue: PaperVenue) {
   const books = new Map<string, number>();
   for (const row of rows) {
     if (row.account === "cc" || row.account === "world") continue;
-    const wallet = row.account === "gifts" || row.account === "gift_reserved" ? "drops" : row.account;
+    const wallet = ["gifts", "gift_reserved", "revenue", "buyback_inflight"].includes(row.account) ? "drops" : row.account;
     books.set(wallet, (books.get(wallet) ?? 0) + row.micros);
   }
   const gaps: string[] = [];
@@ -109,7 +109,7 @@ beforeEach(async () => {
   await t.sql`delete from paper_chain where account not like 'token:%' and account <> 'fee_cards'`;
   // The gift pool and gifts waiting to be claimed live in the Drops wallet, beside the drops money (docs/FLYWHEEL.md).
   await t.sql`insert into paper_chain (account, micros)
-    select case when account in ('gifts', 'gift_reserved') then 'drops' else account end, sum(micros)
+    select case when account in ('gifts', 'gift_reserved', 'revenue', 'buyback_inflight') then 'drops' else account end, sum(micros)
     from balances where account not in ('cc', 'world') group by 1`;
   await t.sql`update holds set status = 'released' where status = 'active'`;
   await t.sql`update claims set state = 'voided' where state = 'won'`;
@@ -123,6 +123,7 @@ describe("revealed drops", () => {
     const ctx = makeCtx(venue);
     await fund(venue, "drops", usd(1000));
     const startDrops = await balanceOf(t.db, "drops");
+    const startRevenue = await balanceOf(t.db, "revenue");
     const userId = await makeUser(venue, usd(100));
 
     const planned = await revealedDrop(ctx);
@@ -137,7 +138,10 @@ describe("revealed drops", () => {
     expect(done.stoppedAt).not.toBeNull();
 
     expect(await balanceOf(t.db, userAccount(userId))).toBe(usd(100) - done.price!);
-    expect(await balanceOf(t.db, "drops")).toBe(startDrops - usd(25) + done.price!);
+    // The pool paid for the pack; half the sale comes back to it, half goes to buyback and burn.
+    const burnShare = Math.floor(done.price! / 2);
+    expect(await balanceOf(t.db, "drops")).toBe(startDrops - usd(25) + (done.price! - burnShare));
+    expect(await balanceOf(t.db, "revenue")).toBe(startRevenue + burnShare);
 
     const held = (await t.db.select().from(holdings).where(eq(holdings.userId, userId)))[0]!;
     expect(held.wallet).toBe("connected");
@@ -239,7 +243,9 @@ describe("revealed drops", () => {
     const attempts = await t.db.select().from(chainTx).where(eq(chainTx.ref, row.memo!));
     expect(attempts.map((a) => a.attempt).sort()).toEqual([1, 2]);
     expect(attempts.find((a) => a.attempt === 1)!.status).toBe("dead");
-    expect(await balanceOf(t.db, "drops")).toBe(await venue.chainBalance("drops"));
+    // The Drops wallet also holds sale money waiting for buyback, and the gift pool.
+    const held = await t.sql<{ n: string }[]>`select coalesce(sum(micros), 0) as n from balances where account in ('drops', 'gifts', 'gift_reserved', 'revenue', 'buyback_inflight')`;
+    expect(Number(held[0]!.n)).toBe(await venue.chainBalance("drops"));
   });
 });
 
@@ -706,7 +712,8 @@ describe("pause and reconcile", () => {
     const venue = createPaperVenue(t.db);
     const ctx = makeCtx(venue);
     await fund(venue, "drops", usd(5000));
-    await setSetting(t.db, "drops", { machineMix: [{ code: "pokemon_25", weight: 1 }] });
+    // Sale money goes to buyback, so packs bought by earlier tests count fully against today's cap.
+    await setSetting(t.db, "drops", { machineMix: [{ code: "pokemon_25", weight: 1 }], dailySpendCap: usd(1_000_000) });
     await setSetting(t.db, "ops", { killSwitch: true });
     const before = await t.sql`select count(*)::int as n from drops`;
     expect((await tickScheduler(ctx)).pausedFor).toBe("kill_switch");
@@ -718,7 +725,7 @@ describe("pause and reconcile", () => {
     expect(status.pausedFor).toBeNull();
     expect(status.intervalSec).toBeGreaterThanOrEqual(30);
     expect((await t.sql`select count(*)::int as n from drops`)[0]!.n).toBe(before[0]!.n + 1);
-    await setSetting(t.db, "drops", { machineMix: DEFAULT_DROP_SETTINGS.machineMix });
+    await setSetting(t.db, "drops", { machineMix: DEFAULT_DROP_SETTINGS.machineMix, dailySpendCap: DEFAULT_DROP_SETTINGS.dailySpendCap });
   });
 });
 

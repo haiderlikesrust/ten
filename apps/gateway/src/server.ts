@@ -71,6 +71,20 @@ export async function buildServer(opts: ServerOptions) {
     accessCache.set(user.id, { at: Date.now(), access });
     return access;
   };
+  /** Every feature needs the access minimum (docs/FLYWHEEL.md). Sends the refusal and returns false when short. */
+  const gateFeature = async (reply: { code: (n: number) => { send: (b: unknown) => unknown } }, userId: string): Promise<boolean> => {
+    const user = await loadUser(db, userId);
+    if (!user) {
+      reply.code(401).send({ error: "Session expired" });
+      return false;
+    }
+    const refused = await accessRefusal(user);
+    if (refused) {
+      reply.code(refused.code === "access" ? 403 : 503).send(refused);
+      return false;
+    }
+    return true;
+  };
   /** Null when the user may buy. Otherwise the reason, ready to send. */
   const accessRefusal = async (user: Account): Promise<{ error: string; code: "access" | "access_unreadable"; access?: Access } | null> => {
     try {
@@ -523,6 +537,7 @@ export async function buildServer(opts: ServerOptions) {
   app.post("/auto", async (request, reply) => {
     const userId = await userIdFrom(request);
     if (!requireUser(request, reply, userId)) return;
+    if (!(await gateFeature(reply, userId))) return;
     const b = request.body as { name: string; category?: string; grader?: string; minGrade?: number; maxPriceUsd: number; minDiscountPct?: number; search?: string; dailyBudgetUsd: number };
     if (!(b.maxPriceUsd > 0) || !(b.dailyBudgetUsd > 0) || typeof b.name !== "string") return reply.code(400).send({ error: "Set a max price and a daily budget" });
     const rows = await db.insert(autoRules).values({
@@ -537,6 +552,8 @@ export async function buildServer(opts: ServerOptions) {
     if (!requireUser(request, reply, userId)) return;
     const { id } = request.params as { id: string };
     const { enabled } = request.body as { enabled: boolean };
+    // Switching a rule off always works; switching one on is using the feature.
+    if (enabled && !(await gateFeature(reply, userId))) return;
     await db.update(autoRules).set({ enabled }).where(and(eq(autoRules.id, id), eq(autoRules.userId, userId)));
     return { ok: true };
   });
@@ -579,6 +596,7 @@ export async function buildServer(opts: ServerOptions) {
   app.post("/pulse/drops/:id/limit", async (request, reply) => {
     const userId = await userIdFrom(request);
     if (!requireUser(request, reply, userId)) return;
+    if (!(await gateFeature(reply, userId))) return;
     const { id } = request.params as { id: string };
     const { maxPrice } = request.body as { maxPrice: number };
     if (!UUID.test(id) || !Number.isSafeInteger(maxPrice) || maxPrice <= 0) return reply.code(400).send({ error: "Enter a price" });
@@ -618,6 +636,7 @@ export async function buildServer(opts: ServerOptions) {
   app.post("/tracker", async (request, reply) => {
     const userId = await userIdFrom(request);
     if (!requireUser(request, reply, userId)) return;
+    if (!(await gateFeature(reply, userId))) return;
     const { wallet, label } = request.body as { wallet: string; label?: string };
     if (!/^[1-9A-HJ-NP-Za-km-z]{32,44}$/.test(wallet ?? "")) return reply.code(400).send({ error: "That is not a Solana address" });
     await db.insert(trackedWallets).values({ userId, wallet, label: (label || wallet.slice(0, 6)).slice(0, 32) }).onConflictDoNothing();
@@ -642,6 +661,7 @@ export async function buildServer(opts: ServerOptions) {
   app.post("/watchlist/:nft", async (request, reply) => {
     const userId = await userIdFrom(request);
     if (!requireUser(request, reply, userId)) return;
+    if (!(await gateFeature(reply, userId))) return;
     const { nft } = request.params as { nft: string };
     const removed = await db.delete(watchlist).where(and(eq(watchlist.userId, userId), eq(watchlist.nft, nft))).returning();
     if (removed.length === 0) await db.insert(watchlist).values({ userId, nft });
@@ -717,7 +737,7 @@ export async function buildServer(opts: ServerOptions) {
     if (!["drops", "fees", "cashback", "flywheel"].includes(key)) return reply.code(400).send({ error: "Unknown settings" });
     const body = request.body as Record<string, number>;
     if (key === "flywheel") {
-      const bps = ["accessBps", "giftHoldBps", "giftBps", "giftSpendBps", "platformFeeBps", "buybackMaxSlippageBps"] as const;
+      const bps = ["accessBps", "giftHoldBps", "giftBps", "giftSpendBps", "saleBuybackBps", "platformFeeBps", "buybackMaxSlippageBps"] as const;
       if (bps.some((name) => body[name] !== undefined && !(Number.isInteger(body[name]) && body[name]! >= 0 && body[name]! <= 10_000))) {
         return reply.code(400).send({ error: "Shares are basis points from 0 to 10000" });
       }

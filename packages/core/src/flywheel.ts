@@ -26,7 +26,9 @@ export interface FlywheelSettings {
   claimHours: number;
   /** Hours before a winner can win again. */
   winCooldownHours: number;
-  /** Platform fee on Market buys and Gacha packs, paid on top. It all goes to buyback and burn. */
+  /** Share of every Pulse sale that buys and burns $TENR. The rest goes back into the drops pool. 5000 is half. */
+  saleBuybackBps: number;
+  /** Unused. Buyback and burn is funded by Pulse sales, not a fee. Kept so saved settings still load. */
   platformFeeBps: number;
   buybackMinUsd: Micros;
   buybackMaxSlippageBps: number;
@@ -49,7 +51,8 @@ export const DEFAULT_FLYWHEEL_SETTINGS: FlywheelSettings = {
   blasterDays: 7,
   claimHours: 24,
   winCooldownHours: 24,
-  platformFeeBps: 100,
+  saleBuybackBps: 5_000,
+  platformFeeBps: 0,
   buybackMinUsd: usd(25),
   buybackMaxSlippageBps: 150,
   buybackEveryMin: 15,
@@ -57,6 +60,12 @@ export const DEFAULT_FLYWHEEL_SETTINGS: FlywheelSettings = {
   giftsEnabled: true,
   buybackEnabled: true,
 };
+
+/** How a Pulse sale divides: part buys and burns $TENR, the rest refills the drops pool. Dust goes to drops. */
+export function splitSale(price: Micros, saleBuybackBps: number): { buyback: Micros; drops: Micros } {
+  const buyback = Math.min(price, Math.max(0, Math.floor((price * saleBuybackBps) / 10_000)));
+  return { buyback, drops: price - buyback };
+}
 
 /** Whether a user holds enough $TENR to act on Tenner. */
 export interface Access {
@@ -83,4 +92,4 @@ export const NO_ACCESS_CHECK: Access = { enforced: false, ok: true, held: 0, nee
 export const shareOfSupply = (bps: number): string => `${Number((bps / 100).toFixed(2))}%`;
 
 /** The refusal people see when they're short. */
-export const accessMessage = (access: Pick<Access, "bps">): string => `Hold ${shareOfSupply(access.bps)} of $TENR to buy`;
+export const accessMessage = (access: Pick<Access, "bps">): string => `Hold ${shareOfSupply(access.bps)} of $TENR to use Tenner`;

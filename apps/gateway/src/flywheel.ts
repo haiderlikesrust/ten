@@ -28,9 +28,11 @@ export function flywheelRoutes(app: FastifyInstance, { database, accessRefusal }
 
   /** Public: where the money goes, the rules, recent draws, and buybacks. */
   app.get("/flywheel", async () => {
-    const [settings, drops, cashback, gifts, giftReserved, revenue] = await Promise.all([
-      getSetting(db, "flywheel"), balanceOf(db, "drops"), balanceOf(db, "cashback"), balanceOf(db, "gifts"), balanceOf(db, "gift_reserved"), balanceOf(db, "revenue"),
+    const [settings, drops, cashback, gifts, giftReserved, waiting, inflight] = await Promise.all([
+      getSetting(db, "flywheel"), balanceOf(db, "drops"), balanceOf(db, "cashback"), balanceOf(db, "gifts"), balanceOf(db, "gift_reserved"), balanceOf(db, "revenue"), balanceOf(db, "buyback_inflight"),
     ]);
+    // Pulse sale money that hasn't bought $TENR yet, including a buyback in progress.
+    const revenue = waiting + inflight;
     const [draws, burns] = await Promise.all([
       db.select().from(giftDraws).orderBy(desc(giftDraws.slotAt)).limit(24),
       db.select().from(buybacks).orderBy(desc(buybacks.createdAt)).limit(20),
@@ -39,7 +41,7 @@ export function flywheelRoutes(app: FastifyInstance, { database, accessRefusal }
     return {
       pools: { drops, cashback, gifts, giftReserved, revenue },
       rules: {
-        accessBps: settings.accessBps, giftHoldBps: settings.giftHoldBps, giftBps: settings.giftBps, giftSpendBps: settings.giftSpendBps, giftIntervalMin: settings.giftIntervalMin,
+        accessBps: settings.accessBps, giftHoldBps: settings.giftHoldBps, giftBps: settings.giftBps, giftSpendBps: settings.giftSpendBps, saleBuybackBps: settings.saleBuybackBps, giftIntervalMin: settings.giftIntervalMin,
         giftTiers: settings.giftTiers, activePacksPerHour: settings.activePacksPerHour, topBlasters: settings.topBlasters, blasterDays: settings.blasterDays,
         claimHours: settings.claimHours, platformFeeBps: settings.platformFeeBps, giftsEnabled: settings.giftsEnabled, buybackEnabled: settings.buybackEnabled,
       },

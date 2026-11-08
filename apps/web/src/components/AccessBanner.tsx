@@ -34,7 +34,7 @@ export function AccessBanner() {
     <div role="status" className="px-box mx-2 mb-2 flex shrink-0 flex-wrap items-center gap-x-3 gap-y-2 px-3.5 py-2 text-[13.5px] sm:mx-3">
       <span className="text-gold"><PixelIcon name="star" /></span>
       <span className="min-w-0 flex-1">
-        <span className="font-semibold text-bone">{accessMessage(access)}, open packs and win gifts.</span>{" "}
+        <span className="font-semibold text-bone">{accessMessage(access)}: Pulse, packs, Market, Auto-Buy and gifts.</span>{" "}
         <span className="text-mute">
           You hold <span className="num text-bone">{tokens.format(access.held)}</span> of <span className="num text-bone">{tokens.format(access.needed)}</span>.
         </span>

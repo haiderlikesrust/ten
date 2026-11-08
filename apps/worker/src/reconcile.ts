@@ -9,14 +9,16 @@ export interface Mismatch {
 }
 
 const TREASURY = ["drops", "cashback", "fee"] as const;
+/** Book accounts whose money is held in the Drops wallet alongside `drops`. */
+export const DROPS_WALLET_ACCOUNTS = ["gifts", "gift_reserved", "revenue", "buyback_inflight"];
 
 /** Long enough for a transfer that just landed to reach the book. */
 const SETTLE_MS = 3_000;
 
 async function compareBooks(ctx: Ctx): Promise<Mismatch[]> {
   const rows = await ctx.db.select().from(balances).where(sql`${balances.account} like 'user:%' or ${balances.account} in ('drops', 'cashback', 'fee')`);
-  // The gift pool, and gifts waiting to be claimed, sit in the Drops wallet beside the drops money.
-  const held = await ctx.db.select().from(balances).where(inArray(balances.account, ["gifts", "gift_reserved"]));
+  // The gift pool, gifts waiting to be claimed, and Pulse sale money waiting for buyback all sit in the Drops wallet.
+  const held = await ctx.db.select().from(balances).where(inArray(balances.account, DROPS_WALLET_ACCOUNTS));
   const inDropsWallet = held.reduce((sum, row) => sum + row.micros, 0);
   const seen = new Set(rows.map((row) => row.account));
   for (const name of TREASURY) if (!seen.has(name)) rows.push({ account: name, micros: 0 });

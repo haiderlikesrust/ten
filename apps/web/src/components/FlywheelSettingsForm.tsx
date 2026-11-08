@@ -8,7 +8,7 @@ import { useUi } from "@/lib/ui";
 import { Button, Field, SectionTitle, Toggle, inputClass } from "./bits";
 
 /** Percent fields are stored as basis points; dollar fields as micro-USDC. */
-const PERCENT = ["accessBps", "giftHoldBps", "giftBps", "giftSpendBps", "platformFeeBps", "buybackMaxSlippageBps"] as const;
+const PERCENT = ["accessBps", "giftHoldBps", "giftBps", "giftSpendBps", "saleBuybackBps", "buybackMaxSlippageBps"] as const;
 const COUNT = ["giftIntervalMin", "activePacksPerHour", "topBlasters", "blasterDays", "claimHours", "winCooldownHours", "buybackEveryMin"] as const;
 
 const LABELS: Record<(typeof PERCENT)[number] | (typeof COUNT)[number] | "buybackMinUsd", string> = {
@@ -16,7 +16,7 @@ const LABELS: Record<(typeof PERCENT)[number] | (typeof COUNT)[number] | "buybac
   giftHoldBps: "Long holders and blasters need (% of supply)",
   giftBps: "Gift pool share of trading fees (%)",
   giftSpendBps: "Most of the pool one draw may spend (%)",
-  platformFeeBps: "Platform fee on Market and packs (%)",
+  saleBuybackBps: "Share of Pulse sales to buyback and burn (%)",
   buybackMaxSlippageBps: "Buyback max slippage (%)",
   giftIntervalMin: "Minutes between draws",
   activePacksPerHour: "Packs in the hour to count as active",

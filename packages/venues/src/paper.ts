@@ -29,6 +29,11 @@ const ROLE_ADDRESS: Record<Role, string> = {
 };
 
 /** Maps a party to its account, the same names the book uses. */
+/** A party's wallet address, for its paper $TENR balance. */
+function addressOf(party: Party): string {
+  return party.kind === "role" ? ROLE_ADDRESS[party.role] : party.address;
+}
+
 export function accountOf(party: Party): string {
   if (party.kind === "role") return party.role === "vault" ? "drops" : party.role;
   if (party.kind === "user") return `user:${party.userId}`;
@@ -37,6 +42,9 @@ export function accountOf(party: Party): string {
 
 const CARDS_ACCOUNT = "fee_cards";
 const tokenAccount = (wallet: string) => `token:${wallet}`;
+/** Paper $TENR price: $100k market cap on 1 billion supply. */
+const PAPER_TENR_PRICE_USD = 0.0001;
+const tenrFor = (usdcIn: Micros) => Math.floor(usdcIn / 1e6 / PAPER_TENR_PRICE_USD);
 
 async function credit(tx: Tx, account: string, delta: number) {
   await tx
@@ -132,6 +140,16 @@ class PaperChainVenue implements ChainVenue {
         await credit(tx, "fee", usd(op.cardsIn * this.opts.cardsPriceUsd));
         return true;
       }
+      case "buyTenr": {
+        const tokens = tenrFor(op.usdcIn);
+        if (tokens < op.minOut) return false;
+        if (!(await debit(tx, accountOf(op.from), op.usdcIn))) return false;
+        await credit(tx, tokenAccount(addressOf(op.from)), tokens);
+        return true;
+      }
+      case "burnTenr":
+        await tx.update(paperChain).set({ micros: 0 }).where(eq(paperChain.account, tokenAccount(addressOf(op.owner))));
+        return true;
       case "feeCollect":
       case "core":
       case "ccList":
@@ -320,6 +338,21 @@ class PaperFeeVenue implements FeeVenue {
     const rows = await this.db.select({ op: paperTx.op }).from(paperTx).where(eq(paperTx.signature, signature));
     const op = rows[0]?.op as Extract<ChainOp, { type: "swap" }> | undefined;
     return op ? usd(op.cardsIn * this.priceUsd) : 0;
+  }
+
+  async tenrQuote(usdcIn: Micros): Promise<number> {
+    return tenrFor(usdcIn);
+  }
+
+  async tenrReceived(signature: string): Promise<number> {
+    const rows = await this.db.select({ op: paperTx.op }).from(paperTx).where(eq(paperTx.signature, signature));
+    const op = rows[0]?.op as Extract<ChainOp, { type: "buyTenr" }> | undefined;
+    return op?.type === "buyTenr" ? tenrFor(op.usdcIn) : 0;
+  }
+
+  async tenrHeld(): Promise<number> {
+    const rows = await this.db.select({ micros: paperChain.micros }).from(paperChain).where(eq(paperChain.account, tokenAccount(ROLE_ADDRESS.drops)));
+    return rows[0]?.micros ?? 0;
   }
 }
 

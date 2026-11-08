@@ -8,7 +8,7 @@ How Tenner's money is meant to feed back into $TENR: an access minimum, buyback 
 
 ```
 trading fees ($CARDS → USDC) ──► Pulse drops + cashback + gift pool ──► users and attention
-outside revenue (platform fee) ──► buyback and burn of $TENR                      │
+Pulse sales (half of what winners pay) ──► buyback and burn of $TENR                      │
             ▲                                                                     ▼
             └──────────── $TENR volume ◄── holding $TENR to use Tenner and win gifts
 ```
@@ -37,23 +37,20 @@ outside revenue (platform fee) ──► buyback and burn of $TENR              
   - `/me` reports `access` (held, needed, ok), reusing a reading for up to 10 seconds. Buys always read fresh.
   - If the chain can't be read, the buy is refused with "try again in a moment" rather than let through.
 
-## 2. Outside revenue → buyback and burn
+## 2. Pulse sales → buyback and burn
 
-- **Source:** a **platform fee of 1%** (`platformFeeBps: 100`) on Market and Scanner buys and on Gacha packs, shown before the click and paid on top.
-  - On-chain it's an extra USDC transfer from the trading wallet to the Fee wallet, in the same order flow.
-  - In the ledger: `user:<id>` → `revenue`.
-  - Pulse has no fee: a Pulse price is the price.
-- **All of `revenue` goes to buyback and burn.** Creator fees don't, because buying $TENR with $TENR's own trading fees is mostly circular.
-- **Loop (every 15 minutes):**
-  1. If `revenue` holds at least $25 (`buybackMinUsd`), swap that USDC → $TENR through Jupiter (`buybackMaxSlippageBps: 150`).
-  2. Burn every $TENR the swap returned, from the Fee wallet.
-  3. Post `revenue` → `world` with ref `buyback:<id>` and record the event (USDC in, $TENR bought, burn signature).
-- **Steps** follow the fee pipeline's pattern:
-  - Stages are PENDING → SWAPPED → BURNED → DONE, each one resumable.
-  - Every transaction goes through `sendOnce`.
-  - Swapping and burning are new `ChainOp` kinds (`swap_usdc_to_tenr`, `burn_tenr`) in `solana.ts`, with paper equivalents.
-- **Privy policy:** the Fee wallet needs SPL Token `Burn` on the $TENR mint, and `TransferChecked` from trading wallets to the Fee wallet's USDC account up to the fee amount. Both go in the [launch checklist](LAUNCH.md).
-- **Price-blind:** it buys on the schedule whatever the price, and never more than what `revenue` holds.
+- **Source: half of every dollar winners pay on Pulse** (`saleBuybackBps: 5000`), for revealed cards and sealed packs alike. The other half goes back into the drops pool, alongside its 50% share of trading fees and what Collector Crypt pays for cards nobody bought.
+- **When it counts:** a revealed card's sale is final at settlement, so it's split there (`revenue` and `drops`). A sealed pack's payment waits in `drops` until the pack is delivered, so a pack that fails can still be refunded, then the buyback share moves to `revenue`. Paper stand-in buyers split the same way.
+- **Where it sits:** `revenue` is held in the Drops wallet, where winners' payments land. Reconciliation counts it there.
+- **Loop (`apps/worker/src/buyback.ts`, checked every minute, a run at most every 15 minutes):**
+  1. If `revenue` holds at least $25 (`buybackMinUsd`) and there's a market, set it all aside (`revenue` → `buyback_inflight`).
+  2. Swap it to $TENR through Jupiter from the Drops wallet, with a fresh quote each attempt and `buybackMaxSlippageBps` (1.5%) as the limit.
+  3. Burn every $TENR the Drops wallet holds.
+  4. Book the USDC as gone (`buyback_inflight` → `world`) and record the run: USDC in, $TENR bought, swap and burn signatures.
+- **Each step resumes:** stages are PENDING → SWAPPED → DONE, every transaction goes through `sendOnce`. A swap that can't go through in 6 hours returns its money to `revenue` (SKIPPED).
+- **Privy policy:** the Drops wallet needs Jupiter's swap and SPL Token `Burn` on the $TENR mint. On the [launch checklist](LAUNCH.md).
+- **Price-blind:** it buys on the schedule whatever the price, never more than what has come in.
+- **What this means for Pulse:** sales used to refill the drops pool in full. Now half comes back, so how often cards drop leans more on trading fees. Change the share in Admin → Treasury.
 
 ## 3. Gift packs every 30 minutes
 
@@ -109,19 +106,18 @@ The groups take turns, one per draw: **active → long holders → top blasters*
 | `holder_streaks` | user_id, wallet_total, above_since, checked_at |
 | `buybacks` | id, stage, usdc_in, tenr_out, swap_sig, burn_sig, created_at, updated_at |
 
-The ledger gains three accounts: `gifts`, `gift_reserved` and `revenue`.
+The ledger gains four accounts: `gifts`, `gift_reserved`, `revenue` and `buyback_inflight`, all held in the Drops wallet.
 
 ## 6. Build order
 
 1. Read supply and balances, plus the access check, wired into Pulse, Gacha, Market and auto-buys. UI: a hint on the Buy buttons when the user is short, and a banner.
 2. The fee split with the gift pool, and the `flywheel` settings with their Admin editing.
 3. Gift draws: eligibility, streaks, commit and reveal, claim, expiry, and the user notification.
-4. The platform fee, then the buyback and burn steps (chain ops plus paper versions).
+4. Pulse sales into `revenue`, then the buyback and burn steps (chain ops plus paper versions).
 5. The `/treasury` page.
 6. Tests for each, plus a paper-mode run of the whole loop.
 
 ## Open items
 
 - Legal review of the gift draws (above).
-- Whether the platform fee stays at 1%, and whether it should apply to Gacha at all, since Gacha already gives holders cashback.
 - How many wallets can ever pass the gate: at most 1,000 can hold 0.1% each.

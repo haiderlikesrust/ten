@@ -23,7 +23,11 @@ export type ChainOp =
   | { type: "ccList"; owner: Party; nft: string; amount: Micros; raw: string }
   | { type: "split"; cashback: Micros; drops: Micros; memo: string }
   | { type: "feeCollect" }
-  | { type: "swap"; cardsIn: number; minOut: Micros };
+  | { type: "swap"; cardsIn: number; minOut: Micros }
+  /** Buyback (docs/FLYWHEEL.md): spends USDC on $TENR at market. minOut is the fewest whole $TENR accepted. */
+  | { type: "buyTenr"; from: Party; usdcIn: Micros; minOut: number }
+  /** Burns every $TENR the owner holds. */
+  | { type: "burnTenr"; owner: Party; memo: string };
 
 export interface PreparedTx {
   signature: string;
@@ -117,6 +121,12 @@ export interface FeeVenue {
   /** Fails loudly if a pump.fun fee sharing config exists, because it breaks collection. */
   assertNoSharingConfig(): Promise<void>;
   usdcReceived(signature: string): Promise<Micros>;
+  /** Whole $TENR this much USDC buys right now. */
+  tenrQuote(usdcIn: Micros): Promise<number>;
+  /** Whole $TENR the Drops wallet received in a buyback swap, read from the confirmed transaction. */
+  tenrReceived(signature: string): Promise<number>;
+  /** Whole $TENR sitting in the Drops wallet, waiting to be burned. */
+  tenrHeld(): Promise<number>;
 }
 
 export interface Venue {

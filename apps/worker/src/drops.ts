@@ -1,4 +1,4 @@
-import {
+import { splitSale,
   BRAND, BUYBACK_SAFETY_SEC, BUYBACK_WINDOW_SEC, MAX_PACK_PAY_ATTEMPTS, assertTransition, blendedBurn, intervalSeconds,
   pauseReason, pickMachine, publicDrop, pulseView, usd, type DropState, type MachineEcon, type PauseReason,
 } from "@gemdex/core";
@@ -297,6 +297,7 @@ async function sellBack(ctx: Ctx, d: Drop) {
 
 async function finishWin(ctx: Ctx, d: Drop, claim: Claim, state: "SETTLED" | "DELIVERED", nft: string, card: Record<string, unknown>, insuredValue: number | null) {
   const quote = await ctx.venue.gacha.buybackQuote(nft).catch(() => null);
+  const sale = splitSale(claim.price, (await getSetting(ctx.db, "flywheel")).saleBuybackBps);
   const done = await ctx.db.transaction(async (tx) => {
     const updated = await tx
       .update(drops)
@@ -304,7 +305,12 @@ async function finishWin(ctx: Ctx, d: Drop, claim: Claim, state: "SETTLED" | "DE
       .where(and(eq(drops.id, d.id), eq(drops.state, d.state)))
       .returning();
     if (updated.length === 0) return null;
-    await post(tx, `settle:${claim.id}`, "snipe", [{ account: userAccount(claim.userId), delta: -claim.price }, { account: "drops", delta: claim.price }]);
+    // Part of every Pulse sale buys and burns $TENR; the rest refills the drops pool (docs/FLYWHEEL.md).
+    await post(tx, `settle:${claim.id}`, "snipe", [
+      { account: userAccount(claim.userId), delta: -claim.price },
+      { account: "revenue", delta: sale.buyback },
+      { account: "drops", delta: sale.drops },
+    ].filter((leg) => leg.delta !== 0));
     await closeHold(tx, claim.holdId, "captured");
     await tx.update(claims).set({ state: "settled" }).where(eq(claims.id, claim.id));
     await tx.update(users).set({ lastWinAt: new Date() }).where(eq(users.id, claim.userId));
@@ -414,6 +420,7 @@ async function stepHidden(ctx: Ctx, d: Drop) {
 
 async function deliverHidden(ctx: Ctx, d: Drop, claim: Claim, opened: Extract<OpenResult, { status: "opened" }>) {
   const quote = opened.nft ? await ctx.venue.gacha.buybackQuote(opened.nft).catch(() => null) : null;
+  const sale = splitSale(claim.price, (await getSetting(ctx.db, "flywheel")).saleBuybackBps);
   const done = await ctx.db.transaction(async (tx) => {
     const updated = await tx
       .update(drops)
@@ -428,6 +435,8 @@ async function deliverHidden(ctx: Ctx, d: Drop, claim: Claim, opened: Extract<Op
       insuredValue: opened.insuredValue, buybackUntil: quote?.expiresAt ?? null, buybackAmount: quote?.amount ?? null,
     });
     await tx.insert(activity).values({ userId: claim.userId, kind: "snipe", title: `Sniped ${String(opened.card.name ?? "a hidden pack")}`, delta: -claim.price, ref: d.id });
+    // Delivered, so the sale is final: the buyback share moves from drops to buyback and burn.
+    if (sale.buyback > 0) await post(tx, `revenue:${claim.id}`, "pulse_sale", [{ account: "drops", delta: -sale.buyback }, { account: "revenue", delta: sale.buyback }]);
     await emit(tx, `user:${claim.userId}`, { type: "claim", id: claim.id, dropId: d.id, state: "settled", drop: pulseView(updated[0]!) });
     return updated[0]!;
   });

@@ -13,6 +13,7 @@ import { tickPulse } from "./pulse";
 import { reconcile } from "./reconcile";
 import { slotReaderFor, tokenReaderFor } from "@gemdex/venues/holdings";
 import { tickGiftDraws, tickHolderStreaks } from "./gifts";
+import { tickBuyback } from "./buyback";
 import { loadVenue, modeFromEnv } from "./venue";
 
 const log = (message: string, extra?: unknown) =>
@@ -149,6 +150,7 @@ async function main() {
   // The $TENR flywheel (docs/FLYWHEEL.md): gift draws every 30 minutes, and how long people have held.
   every(30_000, "gift draws", () => tickGiftDraws(ctx));
   every(600_000, "holder streaks", () => tickHolderStreaks(ctx));
+  every(60_000, "buyback and burn", () => tickBuyback(ctx));
   every(3_600_000, "outbox prune", () => ctx.sql`delete from outbox where at < now() - interval '1 day'`);
 
   // The first backfill is slow, so it runs behind the live loops.

@@ -202,16 +202,16 @@ describe("auto-buy", () => {
 });
 
 describe("stand-in buyers", () => {
-  it("run in paper mode and pay the treasury", async () => {
+  it("run in paper mode and split their payment like real sales", async () => {
     const card = await liveCard();
     await age(card.id, 60);
-    const before = await balanceOf(t.db, "drops");
+    const before = await balanceOf(t.db, "revenue");
     await tickPulse({ ...ctx, rng: () => 0.0001 });
     const sold = await row(card.id);
     expect(sold.state).toBe("SETTLED");
     expect(sold.simBuyer).toBe(true);
     expect(sold.boughtBy).toBeTruthy();
-    expect(await balanceOf(t.db, "drops")).toBeGreaterThanOrEqual(before + sold.price!);
+    expect(await balanceOf(t.db, "revenue")).toBeGreaterThanOrEqual(before + Math.floor(sold.price! / 2));
   });
 
   it("can never run with real money", async () => {

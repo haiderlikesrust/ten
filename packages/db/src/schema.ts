@@ -481,5 +481,25 @@ export const buybacks = pgTable("buybacks", {
   updatedAt: ts("updated_at").notNull().defaultNow(),
 });
 
+/**
+ * USDC an admin moved into or out of a treasury wallet by hand: funding Drops or Cashback, or sweeping to a
+ * multisig. Tenner's own transfers are booked as they happen; these are not, so an admin records each one by its
+ * signature and the worker books exactly what the chain shows moved.
+ */
+export const treasuryMoves = pgTable("treasury_moves", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  signature: text("signature").notNull().unique(),
+  /** "drops" or "cashback": the wallet, and the book account it changes. */
+  wallet: text("wallet").notNull(),
+  /** PENDING until the worker reads it, then BOOKED or REFUSED. */
+  state: text("state").notNull().default("PENDING"),
+  /** What moved: positive into the wallet, negative out of it. */
+  amount: micros("amount"),
+  reason: text("reason"),
+  createdBy: uuid("created_by").references(() => users.id),
+  createdAt: createdAt(),
+  updatedAt: ts("updated_at").notNull().defaultNow(),
+});
+
 export type GiftDraw = typeof giftDraws.$inferSelect;
 export type Drop = typeof drops.$inferSelect;

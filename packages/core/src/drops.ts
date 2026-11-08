@@ -30,7 +30,8 @@ export const REVEALED: Table = {
 export const HIDDEN: Table = {
   LIVE: ["CLAIMED", "EXPIRED"],
   CLAIMED: ["QUOTED", "VOID"],
-  QUOTED: ["DEBITING", "LIVE", "VOID"],
+  // REFUND_DUE: a retry after a burned pack, when no fresh pack can be reserved and the winner has already paid.
+  QUOTED: ["DEBITING", "LIVE", "VOID", "REFUND_DUE"],
   DEBITING: ["PACK_PAYING", "LIVE", "VOID"],
   PACK_PAYING: ["OPENING", "QUOTED", "REFUND_DUE"],
   OPENING: ["DELIVERED", "AWAIT_AUTO_REFUND"],

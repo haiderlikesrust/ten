@@ -68,7 +68,8 @@ function HoldingActions({ holding, onList }: { holding: Holding; onList: () => v
           Sell {money(holding.buybackAmount)}
         </Button>
       ) : null}
-      {holding.status === "held" ? <Button tone="ghost" className="h-8 px-2 text-[12.5px]" onClick={onList}>List</Button> : null}
+      {/* Listing is signed by the trading wallet, so a card in the user's own wallet can't be listed from here. */}
+      {holding.status === "held" && holding.wallet === "trading" ? <Button tone="ghost" className="h-8 px-2 text-[12.5px]" onClick={onList}>List</Button> : null}
       {holding.wallet === "trading" ? <Button tone="ghost" className="h-8 px-2 text-[12.5px]" onClick={() => void act("send", holding.id, { nft: holding.nft })}>Send</Button> : null}
       <a title="Ship to your door" aria-label="Ship to your door" className="ml-auto flex h-8 w-8 shrink-0 items-center justify-center px-cut text-faint hover:bg-bone/[0.07] hover:text-bone" href={`https://collectorcrypt.com/assets/solana/${holding.nft}`} target="_blank" rel="noreferrer noopener">
         <Truck size={15} aria-hidden="true" />
@@ -469,8 +470,12 @@ export default function PortfolioPage() {
                   tone="snipe"
                   className="h-8 text-[13px]"
                   onClick={() => {
-                    for (const h of picked) void act("buyback", h.id, { inMainWallet: h.wallet === "connected" });
+                    // One at a time: cards in the user's own wallet each open a wallet prompt, and they can't all be open at once.
+                    const batch = [...picked];
                     setSelected(new Set());
+                    void (async () => {
+                      for (const h of batch) await act("buyback", h.id, { inMainWallet: h.wallet === "connected" });
+                    })();
                   }}
                 >
                   Sell back <span className="num text-[14px] font-bold">{money(pickedTotal)}</span>
@@ -529,7 +534,7 @@ export default function PortfolioPage() {
                   <li key={row.id} className="flex items-center gap-3 px-cut px-2.5 py-1.5 hover:bg-raised">
                     <span className="num w-9 shrink-0 text-[12.5px] text-faint">{ago(row.at, now)}</span>
                     <span className="min-w-0 flex-1 truncate text-[13.5px]">{row.title}</span>
-                    <span className={`num text-[13.5px] font-medium ${row.delta >= 0 ? "text-teal" : "text-mute"}`}>{signed(row.delta)}</span>
+                    <span className={`num text-[13.5px] font-medium ${row.delta >= 0 ? "text-teal" : "text-mute"}`}>{row.delta !== 0 ? signed(row.delta) : ""}</span>
                   </li>
                 ))}
               </ul>

@@ -1,6 +1,9 @@
-import { and, asc, eq, getSetting, gt, outbox, type Database } from "@gemdex/db";
+import { and, asc, desc, eq, getSetting, gt, outbox, type Database } from "@gemdex/db";
 import type { WebSocket } from "ws";
 import { readSession } from "./auth";
+
+/** How far behind the newest event a late-committing one is still picked up. */
+const LATE_WINDOW = 300;
 
 const PUBLIC_TOPICS = new Set(["drops", "wins", "pulls", "listings", "status", "gifts"]);
 
@@ -16,14 +19,22 @@ interface Client {
 export class Realtime {
   private readonly clients = new Set<Client>();
   private lastSeq = 0;
+  /**
+   * Sequence numbers already sent. A row takes its number when it is inserted but only becomes visible when its
+   * transaction commits, so a lower number can appear after a higher one. Each flush re-reads a short window behind
+   * the newest, and this set keeps those reads from sending anything twice.
+   */
+  private readonly sent = new Set<number>();
   private flushing = false;
   private again = false;
 
   constructor(private readonly database: Database) {}
 
   async start(): Promise<void> {
-    const latest = await this.database.db.select({ seq: outbox.seq }).from(outbox).orderBy(asc(outbox.seq));
-    this.lastSeq = latest.at(-1)?.seq ?? 0;
+    const latest = await this.database.db.select({ seq: outbox.seq }).from(outbox).orderBy(desc(outbox.seq)).limit(LATE_WINDOW);
+    this.lastSeq = latest[0]?.seq ?? 0;
+    // Everything already there counts as sent, so a restart doesn't replay it.
+    for (const row of latest) this.sent.add(row.seq);
     await this.database.sql.listen("outbox", () => void this.flush());
     setInterval(() => void this.flush(), 2_000);
   }
@@ -35,14 +46,17 @@ export class Realtime {
     }
     this.flushing = true;
     try {
-      const rows = await this.database.db.select().from(outbox).where(gt(outbox.seq, this.lastSeq)).orderBy(asc(outbox.seq)).limit(500);
+      const rows = await this.database.db.select().from(outbox).where(gt(outbox.seq, this.lastSeq - LATE_WINDOW)).orderBy(asc(outbox.seq)).limit(LATE_WINDOW + 500);
       for (const row of rows) {
-        this.lastSeq = row.seq;
+        if (this.sent.has(row.seq)) continue;
+        this.sent.add(row.seq);
+        if (row.seq > this.lastSeq) this.lastSeq = row.seq;
         const text = JSON.stringify({ seq: row.seq, topic: row.topic, payload: row.payload, at: row.at });
         for (const client of this.clients) {
           if (this.allowed(client, row.topic) && client.socket.readyState === 1) client.socket.send(text);
         }
       }
+      for (const seq of this.sent) if (seq <= this.lastSeq - LATE_WINDOW) this.sent.delete(seq);
     } finally {
       this.flushing = false;
       if (this.again) {

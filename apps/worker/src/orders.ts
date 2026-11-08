@@ -157,18 +157,19 @@ async function runGachaOpen(ctx: Ctx, order: Order, user: User) {
       }
       if (opened.nft) {
         await tx.insert(holdings).values({
-          userId: user.id, nft: opened.nft, wallet: "connected", card, source: "gacha", cost: gift ? 0 : machine.price, insuredValue: opened.insuredValue,
+          userId: user.id, nft: opened.nft, wallet: "connected", card, source: "gacha", cost: gift ? 0 : pack.price, insuredValue: opened.insuredValue,
           buybackUntil: quote?.expiresAt ?? null, buybackAmount: quote?.amount ?? null,
         });
       }
       await tx.insert(activity).values({
         userId: user.id, kind: "pull", title: `${gift ? "Gift pack" : "Opened"} ${machine.shortName ?? machine.name}: ${String(card.name ?? "Common sold back")}`,
-        delta: gift ? 0 : -machine.price + (opened.turboBuyback ?? 0), ref: memo,
+        delta: gift ? 0 : -pack.price + (opened.turboBuyback ?? 0), ref: memo,
       });
       // Whatever the prize held beyond this pack's price goes back to the gift pool.
       if (gift) {
         const draw = (await tx.select().from(giftDraws).where(eq(giftDraws.id, gift)))[0];
-        const left = (draw?.prize ?? 0) - machine.price;
+        // What the pack actually cost when it was paid; the machine's price may have moved since.
+        const left = (draw?.prize ?? 0) - pack.price;
         if (left > 0) await post(tx, `gift:${gift}:change`, "gift_change", [{ account: "gift_reserved", delta: -left }, { account: "gifts", delta: left }]);
       }
     });
@@ -179,7 +180,7 @@ async function runGachaOpen(ctx: Ctx, order: Order, user: User) {
 
   if (order.step === "refund") {
     if (!(await ctx.venue.gacha.refunded(memo))) return overdue ? finish(ctx, order, "failed", { memo }, PACK_REVIEW) : retry(ctx, order, 60_000);
-    await ctx.db.transaction((tx) => post(tx, `refund:${memo}`, "pack_refund", [{ account: "cc", delta: -machine.price }, { account: funds, delta: machine.price }]));
+    await ctx.db.transaction((tx) => post(tx, `refund:${memo}`, "pack_refund", [{ account: "cc", delta: -pack.price }, { account: funds, delta: pack.price }]));
     await reopenGift(ctx, gift);
     return finish(ctx, order, "failed", {}, gift ? "The gift pack could not open. You can claim it again." : "The pack could not open, so it was refunded");
   }

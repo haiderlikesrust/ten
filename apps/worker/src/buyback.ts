@@ -1,7 +1,7 @@
 // Buyback and burn (docs/FLYWHEEL.md): every dollar a winner pays on Pulse buys $TENR at market, then
 // that $TENR is burned. Nothing from Pulse sales stays in the wallet.
 import { BRAND } from "@gemdex/core";
-import { asc, balanceOf, buybacks, desc, emit, eq, getSetting, inArray, post } from "@gemdex/db";
+import { and, asc, balanceOf, buybacks, chainTx, desc, emit, eq, getSetting, inArray, post } from "@gemdex/db";
 import { role } from "@gemdex/venues";
 import { sendOnce } from "./chain-tx";
 import type { Ctx } from "./ctx";
@@ -46,7 +46,11 @@ export async function tickBuyback(ctx: Ctx, now = Date.now()) {
   }
 
   if (run.stage === "PENDING") {
-    if (now - run.createdAt.getTime() > GIVE_UP_MS) return giveUp(ctx, run, "The swap didn't go through in 6 hours, so the money waits for the next run");
+    if (now - run.createdAt.getTime() > GIVE_UP_MS) {
+      // A swap still signed or sent may yet land; giving up then would spend the same money twice.
+      const open = await ctx.db.select({ id: chainTx.id }).from(chainTx).where(and(eq(chainTx.purpose, "buyback_swap"), eq(chainTx.ref, run.id), inArray(chainTx.status, ["signed", "sent"]))).limit(1);
+      if (!open[0]) return giveUp(ctx, run, "The swap didn't go through in 6 hours, so the money waits for the next run");
+    }
     const usdcIn = run.usdcIn;
     const result = await sendOnce(ctx, "buyback_swap", run.id, async () => {
       // A fresh quote each attempt; the swap fails rather than fill worse than the slippage limit.

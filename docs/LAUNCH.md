@@ -64,7 +64,7 @@ Each wallet is either a private key or a Privy server wallet. Set one of the two
 - [ ] Back each key up offline. Losing the server without a backup loses the wallet.
 - [ ] If a key may have leaked, turn on the kill switch, move the funds to a new wallet, and replace the variable.
 
-Keep long-term funds in a Squads multisig, not in these.
+Keep long-term funds in a Squads multisig, not in these. **Every USDC transfer you make into or out of Drops or Cashback by hand must be recorded** in Admin → Treasury transfers by its signature. Tenner books its own transfers as they happen, but it can't know about yours, and Reconciliation holds drops when the books and the chain disagree.
 
 ## 5. Launch the token
 
@@ -86,7 +86,7 @@ Use a new database and a separate Privy app.
 
 **Canary, in order, watching Admin the whole time:**
 
-1. Fund Drops with $100, Cashback with $20, and Fee Payer with 0.2 SOL.
+1. Fund Drops with $100, Cashback with $20, and Fee Payer with 0.2 SOL. Also send about 0.05 SOL each to Drops and Fee: their Jupiter swaps (fee runs, buyback) must pay their own network fee, and the worker refuses a swap paid by anyone else. Then paste each USDC transfer's signature into Admin → Treasury transfers, so the books (and Pulse) see the money. SOL needs no record.
 2. Open one pack as a normal user.
 3. Let one revealed drop go unsold, and confirm the Vault sells it back.
 4. Buy one revealed card on Pulse, and confirm the card reaches the connected wallet.

@@ -16,7 +16,9 @@ export async function tickBalances(ctx: Ctx): Promise<number> {
   let changed = 0;
   for (const user of rows) {
     if (await hasOpenWork(ctx, user.id)) continue;
-    const chain = await ctx.venue.chain.usdcBalance(trader(user.id, user.wallet));
+    // A failed read is skipped, never taken as zero: that would book a withdrawal that never happened.
+    const chain = await ctx.venue.chain.usdcBalance(trader(user.id, user.wallet)).catch(() => null);
+    if (chain === null) continue;
     const book = await balanceOf(ctx.db, userAccount(user.id));
     const diff = chain - book;
     if (diff === 0) continue;

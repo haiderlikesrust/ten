@@ -344,6 +344,8 @@ async function stepHidden(ctx: Ctx, d: Drop) {
         current = await ensurePack(ctx, d, claim.deliverTo, claim.userId);
       } catch (error) {
         if (error instanceof MachineDown || error instanceof AddressBlocked) {
+          // The winner already paid for a pack that burned. Voiding now would keep their money, so refund them.
+          if (d.packPayAttempts > 0) return void (await move(ctx, d, "REFUND_DUE", { lastError: error.message }));
           await voidClaim(ctx, claim, error.message, false);
           return void (await move(ctx, d, "VOID", { lastError: error.message }));
         }

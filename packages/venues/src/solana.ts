@@ -18,7 +18,7 @@ import { CcRead, ccEndpointsFor, type CcEndpoints } from "./cc-read";
 import { createSigner, type AnyTx, type Signer } from "./signers";
 import {
   AddressBlocked, AmbiguousSend, CardFrozen, MachineDown, TxRefused, role, type BuybackQuote, type ChainOp, type ChainVenue, type FeeVenue, type GachaVenue,
-  type GeneratedPack, type MarketVenue, type Mode, type OpenResult, type PaidPack, type Party, type PreparedTx, type Role, type TxStatus, type Venue,
+  type GeneratedPack, type MarketVenue, type Mode, type OpenResult, type PaidPack, type Party, type PreparedTx, type Role, type TxStatus, type UsdcMoved, type Venue,
 } from "./types";
 
 export const GENESIS = {
@@ -450,6 +450,7 @@ class SolanaChain implements ChainVenue {
     if (!order.transaction) throw new Error(`jupiter returned no transaction: ${String(order.errorMessage ?? "unknown")}`);
     if (out < minOut) throw new Error(`buyback quote ${out} $TENR is below the minimum ${minOut}`);
     const tx = await this.config.signer.sign(VersionedTransaction.deserialize(fromB64(String(order.transaction))), from);
+    await this.assertPaysOwnFee(tx, from);
     return this.envelope({
       via: "jupiter", b64: toB64(tx.serialize()), signature: bs58.encode(tx.signatures[0]!), requestId: String(order.requestId), blockhash: tx.message.recentBlockhash,
       lastValidBlockHeight: Number(order.lastValidBlockHeight ?? (await this.config.connection.getBlockHeight()) + 150),
@@ -477,6 +478,7 @@ class SolanaChain implements ChainVenue {
     const owner = (await this.address(party)).toBase58();
     const mint = this.tenrMint().toBase58();
     const tx = await this.config.connection.getTransaction(signature, { maxSupportedTransactionVersion: 0, commitment: "confirmed" });
+    if (!tx?.meta) throw new Error(`transaction ${signature.slice(0, 8)} is not readable yet`);
     const amount = (list: typeof tx extends null ? never : NonNullable<NonNullable<typeof tx>["meta"]>["postTokenBalances"]) =>
       Number(list?.find((b) => b.owner === owner && b.mint === mint)?.uiTokenAmount.uiAmountString ?? 0);
     return amount(tx?.meta?.postTokenBalances) - amount(tx?.meta?.preTokenBalances);
@@ -583,6 +585,18 @@ class SolanaChain implements ChainVenue {
     return this.jupiter(`/order?${params}`);
   }
 
+  /**
+   * A Jupiter swap must be paid by the wallet doing it. A gasless one is paid and signed by Jupiter only at /execute,
+   * so the signature we would track isn't the transaction's real id: it would look lost, and a resend would swap the
+   * same money twice. Refused before anything is sent; the swap goes ahead once the wallet holds a little SOL.
+   */
+  private async assertPaysOwnFee(tx: VersionedTransaction, party: Party) {
+    const payer = tx.message.staticAccountKeys[0];
+    if (!payer?.equals(await this.address(party)) || blank(tx.signatures[0])) {
+      throw new TxRefused("Jupiter offered a swap paid by someone else. Send a little SOL to this wallet so it pays its own fee.");
+    }
+  }
+
   private async swap(cardsIn: number, minOut: Micros): Promise<PreparedTx> {
     const fee = role("fee");
     const order = await this.quoteCards(cardsIn, (await this.address(fee)).toBase58());
@@ -590,6 +604,7 @@ class SolanaChain implements ChainVenue {
     if (!order.transaction) throw new Error(`jupiter returned no transaction: ${String(order.errorMessage ?? "unknown")}`);
     if (out < minOut) throw new Error(`swap quote ${out} is below the minimum ${minOut}`);
     const tx = await this.config.signer.sign(VersionedTransaction.deserialize(fromB64(String(order.transaction))), fee);
+    await this.assertPaysOwnFee(tx, fee);
     return this.envelope({
       via: "jupiter", b64: toB64(tx.serialize()), signature: bs58.encode(tx.signatures[0]!), requestId: String(order.requestId), blockhash: tx.message.recentBlockhash,
       lastValidBlockHeight: Number(order.lastValidBlockHeight ?? (await this.config.connection.getBlockHeight()) + 150),
@@ -690,8 +705,11 @@ class SolanaChain implements ChainVenue {
     try {
       const balance = await this.config.connection.getTokenAccountBalance(await this.ata(party));
       return Number(balance.value.amount);
-    } catch {
-      return 0;
+    } catch (error) {
+      // A wallet that never held USDC has no token account: that is a real zero. A timeout or rate limit is not,
+      // and reading it as zero would book a fake withdrawal.
+      if (/could not find account/i.test(error instanceof Error ? error.message : String(error))) return 0;
+      throw error;
     }
   }
 
@@ -718,9 +736,27 @@ class SolanaChain implements ChainVenue {
   async usdcReceivedBy(party: Party, signature: string): Promise<Micros> {
     const owner = (await this.address(party)).toBase58();
     const tx = await this.config.connection.getTransaction(signature, { maxSupportedTransactionVersion: 0, commitment: "confirmed" });
+    // RPCs can briefly return nothing for a transaction that just confirmed. Reading that as zero would book the
+    // swap as worth nothing, so it is an error and the caller reads again next run.
+    if (!tx?.meta) throw new Error(`transaction ${signature.slice(0, 8)} is not readable yet`);
     const amount = (list: typeof tx extends null ? never : NonNullable<NonNullable<typeof tx>["meta"]>["postTokenBalances"]) =>
       Number(list?.find((b) => b.owner === owner && b.mint === this.usdc.toBase58())?.uiTokenAmount.amount ?? 0);
     return amount(tx?.meta?.postTokenBalances) - amount(tx?.meta?.preTokenBalances);
+  }
+
+  /**
+   * What a confirmed transaction moved into or out of this party's USDC, read from the chain's own before and after
+   * balances. Used for transfers made outside Tenner, such as an admin funding a treasury wallet.
+   */
+  async usdcMoved(party: Party, signature: string): Promise<UsdcMoved> {
+    const tx = await this.config.connection.getTransaction(signature, { maxSupportedTransactionVersion: 0, commitment: "confirmed" });
+    if (!tx?.meta) return { status: "missing" };
+    if (tx.meta.err) return { status: "failed" };
+    const owner = (await this.address(party)).toBase58();
+    const usdc = this.usdc.toBase58();
+    const total = (list: typeof tx.meta.postTokenBalances) =>
+      (list ?? []).filter((b) => b.owner === owner && b.mint === usdc).reduce((sum, b) => sum + Number(b.uiTokenAmount.amount), 0);
+    return { status: "ok", amount: total(tx.meta.postTokenBalances) - total(tx.meta.preTokenBalances) };
   }
 
   /** A sharing config replaces the creator with a Pump Fees account, which breaks collection. */

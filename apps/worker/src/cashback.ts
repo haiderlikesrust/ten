@@ -1,6 +1,6 @@
 import { cashbackAmount, cashbackCapBps, holderBalance, tierFor, BRAND } from "@gemdex/core";
 import {
-  activity, and, balanceOf, cashbackAccruals, emit, eq, getSetting, gte, holderSnapshots, machines, post, sql, userAccount, users,
+  activity, and, balanceOf, cashbackAccruals, chainTx, emit, eq, getSetting, gte, holderSnapshots, machines, post, sql, userAccount, users,
 } from "@gemdex/db";
 import { role, trader } from "@gemdex/venues";
 import { sendOnce } from "./chain-tx";
@@ -38,7 +38,8 @@ export async function accrueCashback(ctx: Ctx, user: User, memo: string, machine
     machineCapBps: capBps,
     paidToday: Number(paid[0]?.total ?? 0),
     dailyCap: settings.dailyCapPerUser,
-    poolBalance: await balanceOf(ctx.db, "cashback"),
+    // Payouts already promised but not sent yet come out of the same pool.
+    poolBalance: Math.max(0, (await balanceOf(ctx.db, "cashback")) - (await owedCashback(ctx))),
   });
   await ctx.db
     .insert(cashbackAccruals)
@@ -49,11 +50,24 @@ export async function accrueCashback(ctx: Ctx, user: User, memo: string, machine
     .onConflictDoNothing();
 }
 
+async function owedCashback(ctx: Ctx): Promise<number> {
+  const rows = await ctx.db.select({ total: sql<string>`coalesce(sum(${cashbackAccruals.amount}), 0)` }).from(cashbackAccruals).where(eq(cashbackAccruals.status, "accrued"));
+  return Number(rows[0]?.total ?? 0);
+}
+
 export async function tickCashback(ctx: Ctx): Promise<void> {
   const due = await ctx.db.select().from(cashbackAccruals).where(eq(cashbackAccruals.status, "accrued")).limit(25);
   for (const accrual of due) {
     const rows = await ctx.db.select().from(users).where(eq(users.id, accrual.userId));
     const user = rows[0]!;
+    // Two packs opened together can promise more than the pool holds. Sending anyway would fail on chain, cost a fee
+    // every retry, and hold up that user's deposit sync, so a payout the pool can't cover is skipped. Unless one is
+    // already on its way, which still has to finish.
+    const started = await ctx.db.select({ id: chainTx.id }).from(chainTx).where(and(eq(chainTx.purpose, "cashback"), eq(chainTx.ref, accrual.id))).limit(1);
+    if (!started[0] && (await balanceOf(ctx.db, "cashback")) < accrual.amount) {
+      await ctx.db.update(cashbackAccruals).set({ status: "skipped" }).where(eq(cashbackAccruals.id, accrual.id));
+      continue;
+    }
     const result = await sendOnce(ctx, "cashback", accrual.id, async () => ({
       type: "usdc", from: role("cashback"), to: trader(user.id, user.tradingWallet), amount: accrual.amount, memo: `${BRAND.memoPrefix}:cashback:${accrual.id}`,
     }), { retryFailed: true });

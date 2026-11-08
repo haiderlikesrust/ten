@@ -49,6 +49,8 @@ export function useSignIn() {
 }
 
 export function signOut(client: ReturnType<typeof useQueryClient>) {
+  // Without this, Privy stays signed in and the wallet bridge signs straight back in on the next page load.
+  void useUi.getState().wallet?.signOut().catch(() => {});
   setToken(null);
   connectStream();
   client.setQueryData(["me"], null);
@@ -173,7 +175,8 @@ export function useTrade() {
       const wallet = useUi.getState().wallet;
       if (action === "buyback" && extra.inMainWallet && wallet) {
         const { transaction } = await api<{ transaction: string }>(`/holdings/${holdingId}/buyback-tx`, { body: {} });
-        const signedTransaction = await wallet.signWithMain(transaction);
+        const me = client.getQueryData<{ connectedWallet?: string }>(["me"]);
+        const signedTransaction = await wallet.signWithMain(transaction, me?.connectedWallet);
         await api(`/holdings/${holdingId}/buyback-submit`, { body: { signedTransaction } });
         toast({ tone: "ok", title: "Sold back", detail: "USDC is on its way to your trading wallet" });
         void client.invalidateQueries({ queryKey: ["portfolio"] });

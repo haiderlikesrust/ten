@@ -1,4 +1,4 @@
-import { balances, chainTx, eq, feeRuns, getSetting, inArray, loadJson, reconcileRuns, saveJson, setSetting, sql, users } from "@gemdex/db";
+import { balances, chainTx, eq, feeRuns, getSetting, inArray, loadJson, reconcileRuns, saveJson, setSetting, sql, treasuryMoves, users } from "@gemdex/db";
 import { role, trader, type Party } from "@gemdex/venues";
 import type { Ctx } from "./ctx";
 
@@ -59,11 +59,13 @@ export async function reconcile(ctx: Ctx, settleMs = SETTLE_MS): Promise<{ ok: b
     mismatches = (await compareBooks(ctx)).filter((m) => first.some((p) => p.account === m.account && p.chain - p.book === m.chain - m.book));
   }
 
-  const [openTx, openFees] = await Promise.all([
+  const [openTx, openFees, openMoves] = await Promise.all([
     ctx.db.select({ id: chainTx.id }).from(chainTx).where(inArray(chainTx.status, ["signed", "sent"])).limit(1),
     ctx.db.select({ id: feeRuns.id }).from(feeRuns).where(inArray(feeRuns.stage, ["PENDING", "COLLECTED", "SWAPPED"])).limit(1),
+    // A treasury transfer an admin recorded but the worker has not booked yet is money on its way into the books.
+    ctx.db.select({ id: treasuryMoves.id }).from(treasuryMoves).where(eq(treasuryMoves.state, "PENDING")).limit(1),
   ]);
-  const inFlight = openTx.length > 0 || openFees.length > 0;
+  const inFlight = openTx.length > 0 || openFees.length > 0 || openMoves.length > 0;
 
   const previous = (await loadJson<Mismatch[]>(ctx.db, "reconcileLast")) ?? [];
   const repeated = mismatches.filter((m) => previous.some((p) => p.account === m.account && p.book === m.book && p.chain === m.chain));

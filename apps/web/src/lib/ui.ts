@@ -27,7 +27,7 @@ interface UiState {
   paletteOpen: boolean;
   tourOpen: boolean;
   /** Set by the wallet bridge when real sign-in is configured. */
-  wallet: { login: () => void; exportKey: () => Promise<void>; signOut: () => Promise<void>; withdraw: (to: string, amount: number) => Promise<void>; signWithMain: (base64: string) => Promise<string> } | null;
+  wallet: { login: () => void; exportKey: () => Promise<void>; signOut: () => Promise<void>; withdraw: (to: string, amount: number) => Promise<void>; signWithMain: (base64: string, address?: string) => Promise<string> } | null;
   theme: "dark" | "light";
   toast: (toast: Omit<Toast, "id">) => void;
   dismiss: (id: number) => void;

@@ -1,7 +1,7 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { randomUUID } from "node:crypto";
 import { usd } from "@gemdex/core";
-import { drops, eq, holdings, machines, orders, setSetting, users } from "@gemdex/db";
+import { drops, eq, giftDraws, holdings, machines, orders, setSetting, users } from "@gemdex/db";
 import { buildServer } from "../src/server";
 import { createTestDb, type TestDb } from "../../../tools/testdb";
 
@@ -156,6 +156,94 @@ describe("pulse prices", () => {
     expect(prices).toHaveLength(5);
     expect(drop.price).toBe(path[4]);
     expect(drop.boughtBy).toBe("BuyerWallet1111");
+  });
+});
+
+describe("treasury transfers", () => {
+  it("only admins record one, only on a real chain, with a real signature, and only once", async () => {
+    const headers = await login("treasurer");
+    const me = (await app.inject({ url: "/me", headers })).json() as { id: string; connectedWallet: string };
+    const real = await buildServer({ database: t, mode: "devnet" });
+    const saved = process.env.ADMIN_WALLETS;
+    const send = (server: typeof app, payload: unknown) => server.inject({ method: "POST", url: "/admin/treasury-moves", headers, payload: payload as object });
+    const signature = "5".repeat(87) + "z";
+    // On a real chain, admin follows ADMIN_WALLETS.
+    process.env.ADMIN_WALLETS = "";
+    expect((await send(real, { signature, wallet: "drops" })).statusCode).toBe(403);
+    process.env.ADMIN_WALLETS = me.connectedWallet;
+    expect((await send(app, { signature, wallet: "drops" })).statusCode).toBe(400);
+    expect((await send(real, { signature: "not-a-signature", wallet: "drops" })).statusCode).toBe(400);
+    expect((await send(real, { signature, wallet: "vault" })).statusCode).toBe(400);
+    expect((await send(real, { signature: ` ${signature} `, wallet: "drops" })).statusCode).toBe(200);
+    expect((await send(real, { signature, wallet: "cashback" })).statusCode).toBe(409);
+    process.env.ADMIN_WALLETS = saved;
+    await real.close();
+  });
+});
+
+describe("arming mainnet", () => {
+  it("needs a second admin, can't be stretched by one, follows ADMIN_WALLETS live, and renewing never cuts it short", async () => {
+    const [a, b, c] = [await login("arm_a"), await login("arm_b"), await login("arm_c")];
+    const wallet = async (headers: { authorization: string }) => ((await app.inject({ url: "/me", headers })).json() as { connectedWallet: string }).connectedWallet;
+    const saved = process.env.ADMIN_WALLETS;
+    process.env.ADMIN_WALLETS = [await wallet(a), await wallet(b)].join(",");
+    await setSetting(t.db, "ops", { armedBy: [], armedUntil: null, armRequestedAt: null, armRequestBy: null });
+    const main = await buildServer({ database: t, mode: "mainnet" });
+    const press = async (headers: { authorization: string }) => (await main.inject({ method: "POST", url: "/admin/arm", headers, payload: {} }));
+    type Ops = { armedBy: string[]; armedUntil: string | null };
+    try {
+      // Paper made c an admin, but on a real chain only ADMIN_WALLETS counts.
+      expect((await press(c)).statusCode).toBe(403);
+      expect(((await press(a)).json() as Ops).armedUntil).toBeNull();
+      expect(((await press(a)).json() as Ops).armedUntil).toBeNull();
+      const armed = (await press(b)).json() as Ops;
+      expect(new Set(armed.armedBy).size).toBe(2);
+      expect(new Date(armed.armedUntil!).getTime()).toBeGreaterThan(Date.now() + 3_500_000);
+      // One admin pressing again neither extends the window nor ends it.
+      expect(((await press(a)).json() as Ops).armedUntil).toBe(armed.armedUntil);
+      // The second admin completes the renewal.
+      const renewed = (await press(b)).json() as Ops;
+      expect(new Date(renewed.armedUntil!).getTime()).toBeGreaterThanOrEqual(new Date(armed.armedUntil!).getTime());
+      // Taking b out of ADMIN_WALLETS takes effect on the next request, without b signing in again.
+      process.env.ADMIN_WALLETS = await wallet(a);
+      expect((await press(b)).statusCode).toBe(403);
+      expect((await main.inject({ url: "/admin/overview", headers: b })).statusCode).toBe(403);
+    } finally {
+      process.env.ADMIN_WALLETS = saved;
+      await setSetting(t.db, "ops", { armedBy: [], armedUntil: null, armRequestedAt: null, armRequestBy: null });
+      await main.close();
+    }
+  });
+});
+
+describe("trading routes", () => {
+  it("refuse new trades while the kill switch is on, and answer an empty body with a 400", async () => {
+    const headers = await login("paused_trader");
+    await setSetting(t.db, "ops", { killSwitch: true });
+    try {
+      const res = await app.inject({ method: "POST", url: "/orders/open", headers, payload: { machine: "pokemon_25", count: 1, idempotencyKey: randomUUID() } });
+      expect(res.statusCode).toBe(503);
+    } finally {
+      await setSetting(t.db, "ops", { killSwitch: false });
+    }
+    for (const url of ["/orders/buy", "/orders/open", "/orders/holding"]) {
+      expect((await app.inject({ method: "POST", url, headers })).statusCode).toBe(400);
+    }
+    expect((await app.inject({ method: "POST", url: "/orders/open", headers, payload: { machine: "pokemon_25", count: 2.5, idempotencyKey: "k" } })).statusCode).toBe(400);
+    expect((await app.inject({ url: "/listings?limit=-5&offset=-1" })).statusCode).toBe(200);
+  });
+
+  it("lets a winner claim a gift again after a failed attempt, with a new order", async () => {
+    const headers = await login("gift_retry");
+    const me = (await app.inject({ url: "/me", headers })).json() as { id: string };
+    const [draw] = await t.db.insert(giftDraws).values({ slotAt: new Date(), state: "drawn", prize: usd(25), machineCode: "pokemon_25", winnerUserId: me.id, expiresAt: new Date(Date.now() + 3_600_000) }).returning();
+    const first = (await app.inject({ method: "POST", url: `/gifts/${draw!.id}/claim`, headers })).json() as { orderId: string };
+    // The worker fails the order and reopens the gift, as it does when Collector Crypt can't serve the pack.
+    await t.db.update(orders).set({ state: "failed" }).where(eq(orders.id, first.orderId));
+    await t.db.update(giftDraws).set({ orderId: null, state: "drawn" }).where(eq(giftDraws.id, draw!.id));
+    const second = (await app.inject({ method: "POST", url: `/gifts/${draw!.id}/claim`, headers })).json() as { orderId: string };
+    expect(second.orderId).toBeTruthy();
+    expect(second.orderId).not.toBe(first.orderId);
   });
 });
 

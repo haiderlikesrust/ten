@@ -1,6 +1,6 @@
 // The $TENR flywheel's public page and gift claims (docs/FLYWHEEL.md).
 import { giftSlot, type Access } from "@gemdex/core";
-import { and, balanceOf, buybacks, desc, eq, getSetting, giftDraws, isNull, placeOrder, type Database } from "@gemdex/db";
+import { and, balanceOf, buybacks, count, desc, eq, getSetting, giftDraws, isNull, orders, placeOrder, sql, type Database } from "@gemdex/db";
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import { loadUser, requireUser, userIdFrom } from "./auth";
 
@@ -12,6 +12,8 @@ export interface FlywheelDeps {
   database: Database;
   /** Null when the user may act; otherwise why not. Shared with the buy routes. */
   accessRefusal: (user: Account) => Promise<{ error: string; code: string; access?: Access } | null>;
+  /** Why new trades can't start right now (kill switch, or mainnet not armed), or null. */
+  tradingPaused: () => Promise<string | null>;
 }
 
 /** What a draw shows in public: everything needed to check it, without the full entry list. */
@@ -23,7 +25,7 @@ function publicDraw(d: typeof giftDraws.$inferSelect) {
   };
 }
 
-export function flywheelRoutes(app: FastifyInstance, { database, accessRefusal }: FlywheelDeps) {
+export function flywheelRoutes(app: FastifyInstance, { database, accessRefusal, tradingPaused }: FlywheelDeps) {
   const { db } = database;
 
   /** Public: where the money goes, the rules, recent draws, and buybacks. */
@@ -37,6 +39,7 @@ export function flywheelRoutes(app: FastifyInstance, { database, accessRefusal }
       db.select().from(giftDraws).orderBy(desc(giftDraws.slotAt)).limit(24),
       db.select().from(buybacks).orderBy(desc(buybacks.createdAt)).limit(20),
     ]);
+    const totals = await db.select({ usdc: sql<string>`coalesce(sum(${buybacks.usdcIn}), 0)`, tenr: sql<string>`coalesce(sum(${buybacks.tenrOut}), 0)` }).from(buybacks).where(eq(buybacks.stage, "DONE"));
     const nextDrawAt = new Date(giftSlot(Date.now(), settings.giftIntervalMin) + settings.giftIntervalMin * 60_000);
     return {
       pools: { drops, cashback, gifts, giftReserved, revenue },
@@ -48,10 +51,8 @@ export function flywheelRoutes(app: FastifyInstance, { database, accessRefusal }
       nextDrawAt,
       draws: draws.map(publicDraw),
       buybacks: burns.map((b) => ({ id: b.id, stage: b.stage, usdcIn: b.usdcIn, tenrOut: b.tenrOut, swapSig: b.swapSig, burnSig: b.burnSig, at: b.createdAt })),
-      totals: {
-        usdcSpent: burns.filter((b) => b.stage === "DONE").reduce((sum, b) => sum + b.usdcIn, 0),
-        tenrBurned: burns.filter((b) => b.stage === "DONE").reduce((sum, b) => sum + (b.tenrOut ?? 0), 0),
-      },
+      // Every buyback ever, not just the recent ones listed above.
+      totals: { usdcSpent: Number(totals[0]?.usdc ?? 0), tenrBurned: Number(totals[0]?.tenr ?? 0) },
     };
   });
 
@@ -85,13 +86,18 @@ export function flywheelRoutes(app: FastifyInstance, { database, accessRefusal }
     if (!user) return reply.code(401).send({ error: "Session expired" });
     const refused = await accessRefusal(user);
     if (refused) return reply.code(refused.code === "access" ? 403 : 503).send(refused);
+    const paused = await tradingPaused();
+    if (paused) return reply.code(503).send({ error: paused });
     const result = await db.transaction(async (tx) => {
       const rows = await tx.select().from(giftDraws).where(eq(giftDraws.id, id)).for("update");
       const draw = rows[0];
       if (!draw || draw.winnerUserId !== userId) return { code: 404, body: { error: "No such gift" } };
       if (draw.orderId) return { code: 200, body: { orderId: draw.orderId } };
       if (draw.state !== "drawn" || !draw.expiresAt || draw.expiresAt.getTime() <= Date.now() || !draw.machineCode) return { code: 410, body: { error: "This gift has expired" } };
-      const placed = await placeOrder(tx, { userId, kind: "gacha_open", params: { machine: draw.machineCode, turbo: false, gift: draw.id }, holdAmount: 0, idempotencyKey: `gift:${draw.id}` });
+      // Each attempt gets its own key. A failed attempt reopens the gift, and reusing its key would hand back the dead
+      // order and mark the gift claimed for good. The row lock above already stops two claims at once.
+      const attempts = await tx.select({ n: count() }).from(orders).where(sql`${orders.params}->>'gift' = ${draw.id}`);
+      const placed = await placeOrder(tx, { userId, kind: "gacha_open", params: { machine: draw.machineCode, turbo: false, gift: draw.id }, holdAmount: 0, idempotencyKey: `gift:${draw.id}:${attempts[0]?.n ?? 0}` });
       if (!placed.ok) return { code: 409, body: { error: "Could not start the claim" } };
       await tx.update(giftDraws).set({ orderId: placed.orderId, state: "claimed" }).where(and(eq(giftDraws.id, draw.id), isNull(giftDraws.orderId)));
       return { code: 200, body: { orderId: placed.orderId } };

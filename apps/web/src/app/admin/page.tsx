@@ -3,7 +3,7 @@
 import { usd, type FlywheelSettings } from "@gemdex/core";
 import { FlywheelSettingsForm } from "@/components/FlywheelSettingsForm";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Power, ShieldAlert } from "lucide-react";
+import { Copy, Power, ShieldAlert } from "lucide-react";
 import { useEffect, useState } from "react";
 import { Button, Empty, Field, PageHeader, Pill, SectionTitle, StatTile, inputClass } from "@/components/bits";
 import { api } from "@/lib/api";
@@ -20,13 +20,88 @@ interface DropSettings {
 interface Overview {
   mode: string;
   settings: { drops: DropSettings; fees: { cashbackBps: number; minSwapUsd: number; maxSlippageBps: number }; cashback: { dailyCapPerUser: number; maxRateBps: number }; flywheel: FlywheelSettings };
-  ops: { killSwitch: boolean; reconcileHold: boolean };
+  ops: { killSwitch: boolean; reconcileHold: boolean; armedUntil: string | null; armedBy: string[]; armRequestedAt: string | null; armRequestBy: string | null };
   status: DropsStatus | null;
   accounts: Array<{ account: string; micros: number }>;
   runs: Array<{ id: string; stage: string; usdcOut: number | null; cashback: number | null; drops: number | null; createdAt: string; error: string | null }>;
   checks: Array<{ id: number; ok: boolean; at: string; mismatches: Array<{ account: string; book: number; chain: number }> }>;
   stateCounts: Array<{ state: string; kind: string; n: number }>;
   alerts: { stuckHolds: number; openClaims: number; packs24h: number };
+  moves: TreasuryMove[];
+  treasuryWallets: { drops: string; cashback: string; feePayer: string } | null;
+}
+
+interface TreasuryMove { id: string; signature: string; wallet: string; state: string; amount: number | null; reason: string | null; createdAt: string }
+
+/**
+ * Money an admin sends into or out of the Drops or Cashback wallet by hand never reaches the books on its own, and
+ * Pulse only spends what the books hold. Recording the transfer here books exactly what the chain shows moved.
+ */
+function TreasuryTransfers({ data, now }: { data: Overview; now: number }) {
+  const client = useQueryClient();
+  const toast = useUi((s) => s.toast);
+  const [wallet, setWallet] = useState<"drops" | "cashback">("drops");
+  const [signature, setSignature] = useState("");
+  const record = useMutation({
+    mutationFn: () => api("/admin/treasury-moves", { body: { wallet, signature: signature.trim() } }),
+    onSuccess: () => {
+      setSignature("");
+      toast({ tone: "ok", title: "Transfer recorded", detail: "It reaches the books once the worker reads it, within a minute" });
+      void client.invalidateQueries({ queryKey: ["admin"] });
+    },
+    onError: (error) => toast({ tone: "bad", title: "Could not record that", detail: (error as Error).message }),
+  });
+  const addresses = data.treasuryWallets;
+  const copy = (value: string) => void navigator.clipboard.writeText(value).then(() => toast({ tone: "ok", title: "Copied" }));
+  return (
+    <section className="slab">
+      <SectionTitle>Treasury transfers</SectionTitle>
+      <p className="px-4 text-[13px] text-mute">
+        Funding Pulse or cashback, or sweeping spare money out? Send USDC yourself, then paste the transaction signature here. The books follow exactly what moved. Tenner's own transfers are booked by themselves.
+      </p>
+      {addresses ? (
+        <div className="flex flex-col gap-1 px-4 pt-3">
+          {([["Drops (Pulse pool)", addresses.drops], ["Cashback", addresses.cashback], ["Fee Payer (SOL only)", addresses.feePayer]] as const).map(([label, address]) => (
+            <div key={label} className="flex items-center gap-2 text-[13px]">
+              <span className="w-[150px] shrink-0 text-faint">{label}</span>
+              <span className="num min-w-0 flex-1 truncate">{address}</span>
+              <button type="button" aria-label={`Copy the ${label} address`} title="Copy address" onClick={() => copy(address)} className="flex h-7 w-7 shrink-0 items-center justify-center px-cut text-mute hover:bg-raised hover:text-bone">
+                <Copy size={14} aria-hidden="true" />
+              </button>
+            </div>
+          ))}
+        </div>
+      ) : null}
+      <form
+        className="flex flex-wrap gap-2 px-4 py-3"
+        onSubmit={(event) => {
+          event.preventDefault();
+          if (signature.trim()) record.mutate();
+        }}
+      >
+        <select className={`${inputClass} w-auto`} aria-label="Wallet" value={wallet} onChange={(e) => setWallet(e.target.value as "drops" | "cashback")}>
+          <option value="drops">Drops</option>
+          <option value="cashback">Cashback</option>
+        </select>
+        <input className={`${inputClass} num min-w-[200px] flex-1`} aria-label="Transaction signature" placeholder="Transaction signature" value={signature} onChange={(e) => setSignature(e.target.value)} />
+        <Button type="submit" tone="primary" disabled={!signature.trim() || record.isPending}>Record</Button>
+      </form>
+      {data.moves.length > 0 ? (
+        <ul className="flex flex-col gap-1 px-2 pb-2">
+          {data.moves.map((move) => (
+            <li key={move.id} className="flex flex-wrap items-center gap-x-3 gap-y-1 px-cut px-2.5 py-1.5 text-[13px]">
+              <span className="num w-9 text-faint">{ago(move.createdAt, now)}</span>
+              <Pill tone={move.state === "BOOKED" ? "good" : move.state === "REFUSED" ? "bad" : "warn"}>{move.state === "BOOKED" ? "Booked" : move.state === "REFUSED" ? "Refused" : "Reading"}</Pill>
+              <span className="text-mute">{move.wallet === "drops" ? "Drops" : "Cashback"}</span>
+              <span className="num truncate text-faint">{move.signature.slice(0, 10)}…</span>
+              {move.amount !== null ? <span className={`num ml-auto ${move.amount > 0 ? "text-teal" : "text-loss"}`}>{move.amount > 0 ? "+" : "-"}{money(Math.abs(move.amount))}</span> : null}
+              {move.reason ? <span className="w-full pl-12 text-[12.5px] text-faint">{move.reason}</span> : null}
+            </li>
+          ))}
+        </ul>
+      ) : null}
+    </section>
+  );
 }
 
 export default function AdminPage() {
@@ -53,6 +128,16 @@ export default function AdminPage() {
     mutationFn: (body: { killSwitch?: boolean; reconcileHold?: boolean }) => api("/admin/ops", { body }),
     onSuccess: () => client.invalidateQueries({ queryKey: ["admin"] }),
   });
+  // Mainnet signs nothing until two different admins arm it, and each arm lasts two hours.
+  const arm = useMutation({
+    mutationFn: (action: "arm" | "disarm") => api<Overview["ops"]>(`/admin/${action}`, { body: {} }),
+    onSuccess: (next, action) => {
+      const armed = !!next.armedUntil && new Date(next.armedUntil).getTime() > Date.now() && new Set(next.armedBy).size >= 2;
+      toast(action === "disarm" ? { tone: "ok", title: "Disarmed", detail: "Nothing signs until two admins arm again" } : armed && next.armRequestBy === null ? { tone: "ok", title: "Armed for 2 hours" } : { tone: "info", title: "Waiting for a second admin", detail: "Another admin has 15 minutes to press Arm" });
+      void client.invalidateQueries({ queryKey: ["admin"] });
+    },
+    onError: (error) => toast({ tone: "bad", title: (error as Error).message }),
+  });
   const save = useMutation({
     mutationFn: () => {
       const n = (key: string) => Number(form[key]);
@@ -78,6 +163,9 @@ export default function AdminPage() {
   if (!data) return <div className="p-6 text-faint">Loading</div>;
 
   const balance = (name: string) => data.accounts.find((a) => a.account === name)?.micros ?? 0;
+  const armedUntil = data.ops.armedUntil ? new Date(data.ops.armedUntil).getTime() : 0;
+  const armed = armedUntil > now && new Set(data.ops.armedBy).size >= 2;
+  const armWaiting = !!data.ops.armRequestBy && !!data.ops.armRequestedAt && now - new Date(data.ops.armRequestedAt).getTime() < 15 * 60_000;
   const status = data.status;
   const next = status?.nextDropAt ? (new Date(status.nextDropAt).getTime() - now) / 1000 : null;
   const input = (key: string, label: string, hint?: string) => (
@@ -94,6 +182,13 @@ export default function AdminPage() {
           right={
             <div className="flex flex-wrap items-center gap-2">
               <Pill tone={data.mode === "mainnet" ? "bad" : "warn"}><span className="capitalize">{data.mode}</span></Pill>
+              {data.mode === "mainnet" ? (
+                <>
+                  <Pill tone={armed ? "good" : "bad"}>{armed ? `Armed until ${new Date(armedUntil).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}` : armWaiting ? "1 of 2 admins armed" : "Not armed"}</Pill>
+                  <Button tone="primary" disabled={arm.isPending} onClick={() => arm.mutate("arm")}>{armed ? "Renew arm" : "Arm"}</Button>
+                  {armed ? <Button disabled={arm.isPending} onClick={() => arm.mutate("disarm")}>Disarm</Button> : null}
+                </>
+              ) : null}
               {data.ops.reconcileHold ? <Button tone="danger" onClick={() => ops.mutate({ reconcileHold: false })}>Clear reconcile hold</Button> : null}
               <Button tone={data.ops.killSwitch ? "snipe" : "danger"} onClick={() => ops.mutate({ killSwitch: !data.ops.killSwitch })}>
                 <Power size={15} aria-hidden="true" /> {data.ops.killSwitch ? "Resume everything" : "Kill switch"}
@@ -146,6 +241,7 @@ export default function AdminPage() {
           </form>
 
           <div className="flex min-w-0 flex-col gap-3">
+            {data.mode !== "paper" ? <TreasuryTransfers data={data} now={now} /> : null}
             {data.settings.flywheel ? <FlywheelSettingsForm settings={data.settings.flywheel} /> : null}
             <section className="slab">
               <SectionTitle>Fee pipeline</SectionTitle>

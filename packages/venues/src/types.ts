@@ -60,7 +60,16 @@ export interface ChainVenue {
   status(signature: string, raw: string): Promise<TxStatus>;
   usdcBalance(party: Party): Promise<Micros>;
   tokenBalance(wallet: string): Promise<number>;
+  /** How much USDC a confirmed transaction moved into (positive) or out of (negative) this party's wallet. */
+  usdcMoved(party: Party, signature: string): Promise<UsdcMoved>;
 }
+
+export type UsdcMoved =
+  /** Not on chain yet, or not confirmed. */
+  | { status: "missing" }
+  /** It landed but failed, so nothing moved. */
+  | { status: "failed" }
+  | { status: "ok"; amount: Micros };
 
 export interface GeneratedPack {
   memo: string;

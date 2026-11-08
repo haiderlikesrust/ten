@@ -2,7 +2,7 @@ import { execSync } from "node:child_process";
 import path from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { setSetting } from "@gemdex/db";
-import { Connection, Keypair, PublicKey, Transaction, VersionedTransaction, type TransactionInstruction } from "@solana/web3.js";
+import { Connection, Keypair, PublicKey, SystemProgram, Transaction, TransactionMessage, VersionedTransaction, type TransactionInstruction } from "@solana/web3.js";
 import bs58 from "bs58";
 import { createSigner, LocalSigner, type AnyTx, type Signer } from "../src/signers";
 import { assertArmed, assertCluster, buildSolanaVenue, createSolanaVenue, GENESIS } from "../src/solana";
@@ -110,6 +110,34 @@ describe("creator fees waiting to be claimed", () => {
     asked.length = 0;
     expect(await venueWith().fees.cardsUnclaimed()).toBe(0);
     expect(asked).toEqual([]);
+  });
+});
+
+describe("reading the chain", () => {
+  const venueOn = (connection: Partial<Connection>, fetchImpl?: typeof fetch) =>
+    buildSolanaVenue({ mode: "devnet", connection: { rpcEndpoint: "http://127.0.0.1:1", ...connection } as Connection, signer: new LocalSigner("reads"), db: t.db, endpoints: CC_DEVNET, fetchImpl }, { drops: "", vault: "", cashback: "", fee: "", feePayer: "" });
+
+  it("reads a wallet with no USDC account as zero, but a failed read as an error, never a fake zero", async () => {
+    const missing = venueOn({ getTokenAccountBalance: async () => { throw new Error("failed to get token account balance: Invalid param: could not find account"); } });
+    expect(await missing.chain.usdcBalance(role("drops"))).toBe(0);
+    const down = venueOn({ getTokenAccountBalance: async () => { throw new Error("429 Too Many Requests"); } });
+    await expect(down.chain.usdcBalance(role("drops"))).rejects.toThrow(/429/);
+  });
+
+  it("refuses a Jupiter swap that someone else pays for, and accepts one the wallet pays itself", async () => {
+    const signer = new LocalSigner("reads");
+    const fee = await signer.addressOf(role("fee"));
+    const order = (payer: PublicKey) => {
+      const ix = SystemProgram.transfer({ fromPubkey: fee, toPubkey: Keypair.generate().publicKey, lamports: 1 });
+      const message = new TransactionMessage({ payerKey: payer, recentBlockhash: Keypair.generate().publicKey.toBase58(), instructions: [ix] }).compileToV0Message();
+      return { transaction: Buffer.from(new VersionedTransaction(message).serialize()).toString("base64"), outAmount: "5000000", requestId: "r1", lastValidBlockHeight: 100 };
+    };
+    let payer = Keypair.generate().publicKey;
+    const fetchImpl = (async () => new Response(JSON.stringify(order(payer)))) as unknown as typeof fetch;
+    const venue = venueOn({ getBlockHeight: async () => 1 }, fetchImpl);
+    await expect(venue.chain.prepare({ type: "swap", cardsIn: 10, minOut: 1 })).rejects.toThrow(/paid by someone else/);
+    payer = fee;
+    await expect(venue.chain.prepare({ type: "swap", cardsIn: 10, minOut: 1 })).resolves.toMatchObject({ signature: expect.any(String) });
   });
 });
 

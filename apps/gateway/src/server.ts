@@ -4,7 +4,7 @@ import websocket from "@fastify/websocket";
 import { BRAND, accessMessage, cashbackCapBps, discountPct, parseGradeNumber, pastPrices, publicDrop, pulseView, tierFor, holderBalance, usd, type Access } from "@gemdex/core";
 import {
   activity, and, asc, dropLimits, availableBalance, balanceOf, balances, ccPacks, claims, count, desc, drops, emit, eq, feeRuns, getSetting, gt, gte, holderSnapshots,
-  holdings, holds, ilike, inArray, listings, loadJson, lte, machines, orders, placeOrder, pricePoints, pulls, reconcileRuns, sales, setSetting, sql, trackedWallets,
+  holdings, holds, ilike, inArray, listings, loadJson, lte, machines, orders, placeOrder, pricePoints, pulls, reconcileRuns, sales, saveJson, setSetting, sql, trackedWallets, treasuryMoves,
   userAccount, users, watchlist, type Database,
 } from "@gemdex/db";
 import { CARDS_MINT, CcRead, createPaperVenue, fetchTokenMarket, type Mode, type PaperVenue, type TokenMarket } from "@gemdex/venues";
@@ -24,6 +24,39 @@ export interface ServerOptions {
 }
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+const BASE58 = "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz";
+
+/** A Solana address as its 32 raw bytes, or null if it isn't one. */
+function addressBytes(address: string): Buffer | null {
+  let value = 0n;
+  for (const char of address) {
+    const digit = BASE58.indexOf(char);
+    if (digit < 0) return null;
+    value = value * 58n + BigInt(digit);
+  }
+  const bytes: number[] = [];
+  while (value > 0n) {
+    bytes.unshift(Number(value & 255n));
+    value >>= 8n;
+  }
+  for (const char of address) {
+    if (char !== "1") break;
+    bytes.unshift(0);
+  }
+  return bytes.length === 32 ? Buffer.from(bytes) : null;
+}
+
+/** Whether a base64 transaction names this account. Checked on the raw bytes, so a wallet adding a fee instruction doesn't matter. */
+function mentionsAccount(base64: string, address: string): boolean {
+  const needle = addressBytes(address);
+  if (!needle) return false;
+  try {
+    return Buffer.from(base64, "base64").includes(needle);
+  } catch {
+    return false;
+  }
+}
 const HOLDING_ACTIONS = ["buyback", "list", "send"];
 const asNumber = (value: unknown): number | undefined => {
   const n = Number(value);
@@ -164,8 +197,8 @@ export async function buildServer(opts: ServerOptions) {
     const minDiscount = asNumber(q.minDiscount);
     if (minDiscount !== undefined) filters.push(sql`${listings.insuredValue} > 0 and (1 - ${listings.price}::float8 / ${listings.insuredValue}) * 100 >= ${minDiscount}`);
     const sort = LISTING_SORTS[(q.sort ?? "newest") as keyof typeof LISTING_SORTS] ?? LISTING_SORTS.newest;
-    const limit = Math.min(asNumber(q.limit) ?? 100, 500);
-    const rows = await db.select().from(listings).where(and(...filters)).orderBy(sort).limit(limit).offset(asNumber(q.offset) ?? 0);
+    const limit = Math.max(0, Math.min(Math.floor(asNumber(q.limit) ?? 100), 500));
+    const rows = await db.select().from(listings).where(and(...filters)).orderBy(sort).limit(limit).offset(Math.max(0, Math.floor(asNumber(q.offset) ?? 0)));
     const total = await db.select({ n: count() }).from(listings).where(and(...filters));
     return { rows: rows.map(listingDto), total: total[0]?.n ?? 0 };
   });
@@ -205,7 +238,7 @@ export async function buildServer(opts: ServerOptions) {
     const filters = [];
     if (q.packType) filters.push(eq(pulls.packType, q.packType));
     if (q.wallet) filters.push(eq(pulls.winner, q.wallet));
-    return db.select().from(pulls).where(and(...filters)).orderBy(desc(pulls.at)).limit(Math.min(asNumber(q.limit) ?? 50, 200));
+    return db.select().from(pulls).where(and(...filters)).orderBy(desc(pulls.at)).limit(Math.max(0, Math.min(Math.floor(asNumber(q.limit) ?? 50), 200)));
   });
 
   app.get("/machines", async () => {
@@ -327,7 +360,7 @@ export async function buildServer(opts: ServerOptions) {
     const access = await accessOf(user, false).catch(() => null);
     return {
       id: user.id, handle: user.handle, tradingWallet: user.tradingWallet, connectedWallet: user.connectedWallet, holderWallet: user.holderWallet,
-      isAdmin: user.isAdmin, strikes: user.strikes, settings: user.settings, balance, available, held: balance - available,
+      isAdmin: isAdmin(user), strikes: user.strikes, settings: user.settings, balance, available, held: balance - available,
       cooldownSec: Math.max(0, Math.ceil(left)), tokens, tier: tierFor(tokens, cashback.tiers), access,
     };
   });
@@ -335,10 +368,14 @@ export async function buildServer(opts: ServerOptions) {
   app.patch("/me/settings", async (request, reply) => {
     const userId = await userIdFrom(request);
     if (!requireUser(request, reply, userId)) return;
-    const body = (request.body ?? {}) as { quickBuy?: number[]; tradeLimitUsd?: number; autoForward?: boolean; soundOn?: boolean };
+    const body = (request.body ?? {}) as { quickBuy?: unknown; tradeLimitUsd?: unknown; autoForward?: unknown; soundOn?: unknown };
     const user = await loadUser(db, userId);
-    // Only known keys are stored, so a client can never write arbitrary settings.
-    const merged = { ...user!.settings, quickBuy: body.quickBuy, tradeLimitUsd: body.tradeLimitUsd, autoForward: body.autoForward, soundOn: body.soundOn };
+    // Only known keys are stored, each only when sent and well formed, so saving one setting never wipes another.
+    const merged = { ...user!.settings };
+    if ("tradeLimitUsd" in body) merged.tradeLimitUsd = typeof body.tradeLimitUsd === "number" && body.tradeLimitUsd > 0 ? body.tradeLimitUsd : undefined;
+    if (typeof body.autoForward === "boolean") merged.autoForward = body.autoForward;
+    if (typeof body.soundOn === "boolean") merged.soundOn = body.soundOn;
+    if (Array.isArray(body.quickBuy)) merged.quickBuy = body.quickBuy.filter((n): n is number => typeof n === "number" && n > 0).slice(0, 5);
     await db.update(users).set({ settings: merged }).where(eq(users.id, userId));
     return merged;
   });
@@ -357,6 +394,8 @@ export async function buildServer(opts: ServerOptions) {
     if (!user) return reply.code(401).send({ error: "Session expired" });
     const refused = await accessRefusal(user);
     if (refused) return { status: "rejected", reason: refused.code, message: refused.error, access: refused.access };
+    const paused = await tradingPaused();
+    if (paused) return { status: "rejected", reason: "drops_paused", message: paused };
     return claimDrop(db, { userId, dropId: id, idempotencyKey, maxPrice });
   });
 
@@ -369,7 +408,7 @@ export async function buildServer(opts: ServerOptions) {
   app.post("/orders/buy", async (request, reply) => {
     const userId = await userIdFrom(request);
     if (!requireUser(request, reply, userId)) return;
-    const { nft, price, idempotencyKey } = request.body as { nft: string; price: number; idempotencyKey: string };
+    const { nft, price, idempotencyKey } = (request.body ?? {}) as { nft: string; price: number; idempotencyKey: string };
     if (typeof nft !== "string" || !Number.isSafeInteger(price) || price <= 0 || !idempotencyKey) return reply.code(400).send({ error: "Bad order" });
     const user = await loadUser(db, userId);
     if (!user) return reply.code(401).send({ error: "Session expired" });
@@ -377,21 +416,27 @@ export async function buildServer(opts: ServerOptions) {
     if (refused) return reply.code(refused.code === "access" ? 403 : 503).send(refused);
     const limit = user.settings.tradeLimitUsd;
     if (limit && price > usd(limit)) return reply.code(400).send({ error: `Over your ${limit} USDC trade limit` });
+    const paused = await tradingPaused();
+    if (paused) return reply.code(503).send({ error: paused });
     return order(request, reply, userId, { userId, kind: "market_buy", params: { nft, price }, holdAmount: price, idempotencyKey });
   });
 
   app.post("/orders/open", async (request, reply) => {
     const userId = await userIdFrom(request);
     if (!requireUser(request, reply, userId)) return;
-    const { machine, turbo, count: quantity, idempotencyKey } = request.body as { machine: string; turbo?: boolean; count?: number; idempotencyKey: string };
+    const { machine, turbo, count: quantity, idempotencyKey } = (request.body ?? {}) as { machine: string; turbo?: boolean; count?: number; idempotencyKey: string };
     const user = await loadUser(db, userId);
     if (!user) return reply.code(401).send({ error: "Session expired" });
     const refused = await accessRefusal(user);
     if (refused) return reply.code(refused.code === "access" ? 403 : 503).send(refused);
+    if (typeof machine !== "string" || typeof idempotencyKey !== "string" || !idempotencyKey) return reply.code(400).send({ error: "Bad order" });
+    if (quantity !== undefined && !(Number.isInteger(quantity) && quantity >= 1 && quantity <= 100)) return reply.code(400).send({ error: "Open between 1 and 100 packs" });
+    const paused = await tradingPaused();
+    if (paused) return reply.code(503).send({ error: paused });
     const rows = await db.select().from(machines).where(eq(machines.code, machine));
     const row = rows[0];
     if (!row || !row.isOpen) return reply.code(400).send({ error: "This machine is closed" });
-    const n = Math.min(Math.max(1, quantity ?? 1), 100);
+    const n = quantity ?? 1;
     const placed: string[] = [];
     for (let i = 0; i < n; i++) {
       const result = await db.transaction((tx) => placeOrder(tx, { userId, kind: "gacha_open", params: { machine, turbo: !!turbo }, holdAmount: row.price, idempotencyKey: `${idempotencyKey}:${i}` }));
@@ -407,10 +452,18 @@ export async function buildServer(opts: ServerOptions) {
   app.post("/orders/holding", async (request, reply) => {
     const userId = await userIdFrom(request);
     if (!requireUser(request, reply, userId)) return;
-    const { action, holdingId, nft, price, idempotencyKey } = request.body as { action: "buyback" | "list" | "send"; holdingId: string; nft?: string; price?: number; idempotencyKey: string };
+    const { action, holdingId, nft, price, idempotencyKey } = (request.body ?? {}) as { action: "buyback" | "list" | "send"; holdingId: string; nft?: string; price?: number; idempotencyKey: string };
     if (!HOLDING_ACTIONS.includes(action) || !idempotencyKey) return reply.code(400).send({ error: "Bad order" });
     if (action === "list" && !(Number.isSafeInteger(price) && price! > 0)) return reply.code(400).send({ error: "Enter a price" });
     if (action !== "send" && !UUID.test(holdingId ?? "")) return reply.code(400).send({ error: "Bad order" });
+    if (action === "send" && (typeof nft !== "string" || !nft)) return reply.code(400).send({ error: "Bad order" });
+    if (action === "list") {
+      // Listings are signed by the trading wallet, so a card in the user's own wallet can't be listed from here.
+      const held = await db.select({ wallet: holdings.wallet }).from(holdings).where(and(eq(holdings.id, holdingId), eq(holdings.userId, userId)));
+      if (held[0] && held[0].wallet !== "trading") return reply.code(400).send({ error: "Only cards in your trading wallet can be listed here" });
+    }
+    const paused = await tradingPaused();
+    if (paused) return reply.code(503).send({ error: paused });
     return order(request, reply, userId, { userId, kind: action, params: action === "list" ? { holdingId, price } : action === "send" ? { nft } : { holdingId }, holdAmount: 0, idempotencyKey });
   });
 
@@ -458,6 +511,7 @@ export async function buildServer(opts: ServerOptions) {
     // The same bounds the worker uses: anything else is not a real offer.
     const offered = typeof built.json.serializedTransaction === "string" && Number.isSafeInteger(amount) && amount >= 10_000 && amount <= 280_000_000_000;
     if (!built.ok || !offered) return reply.code(400).send({ error: "The buyback window has closed" });
+    await saveJson(db, `buybackOffer:${holding.id}`, { amount, at: Date.now() });
     return { transaction: built.json.serializedTransaction, amount };
   });
 
@@ -467,8 +521,11 @@ export async function buildServer(opts: ServerOptions) {
     if (paper) return reply.code(404).send({ error: "Paper mode sells back through orders" });
     const holding = await ownedConnected(userId, (request.params as { id: string }).id);
     if (!holding) return reply.code(404).send({ error: "You do not hold this card" });
-    const { signedTransaction } = request.body as { signedTransaction: string };
+    const { signedTransaction } = (request.body ?? {}) as { signedTransaction: string };
     if (typeof signedTransaction !== "string" || !signedTransaction) return reply.code(400).send({ error: "Bad transaction" });
+    // It must be this card's sell-back, or the wrong card would be marked sold.
+    if (!mentionsAccount(signedTransaction, holding.nft)) return reply.code(400).send({ error: "That transaction is not this card's sell-back. Start the sell-back again." });
+    const offer = await loadJson<{ amount: number; at: number }>(db, `buybackOffer:${holding.id}`);
     // CC waits for the chain before it answers, so it gets longer than other calls.
     const sent = await gacha("/api/submitTransaction", { signedTransaction }, 45_000);
     if (!sent.reached) return reply.code(504).send({ error: "We could not confirm the sell-back. Check your wallet before trying again." });
@@ -480,7 +537,7 @@ export async function buildServer(opts: ServerOptions) {
     }
     await db.transaction(async (tx) => {
       // The amount comes from our stored quote, never the client. The USDC itself reaches the book through deposit sync.
-      await tx.update(holdings).set({ status: "bought_back", exitPrice: holding.buybackAmount, exitedAt: new Date() }).where(eq(holdings.id, holding.id));
+      await tx.update(holdings).set({ status: "bought_back", exitPrice: offer?.amount ?? holding.buybackAmount, exitedAt: new Date() }).where(eq(holdings.id, holding.id));
       await tx.insert(activity).values({ userId, kind: "sell", title: `Sold back ${String(holding.card.name ?? "a card")}`, delta: 0, ref: holding.nft });
     });
     return { ok: true };
@@ -551,13 +608,17 @@ export async function buildServer(opts: ServerOptions) {
     if (!requireUser(request, reply, userId)) return;
     if (!(await gateFeature(reply, userId))) return;
     const { id } = request.params as { id: string };
-    const { maxPrice } = request.body as { maxPrice: number };
+    const { maxPrice } = (request.body ?? {}) as { maxPrice: number };
     if (!UUID.test(id) || !Number.isSafeInteger(maxPrice) || maxPrice <= 0) return reply.code(400).send({ error: "Enter a price" });
     const rows = await db.select({ state: drops.state }).from(drops).where(eq(drops.id, id));
     if (rows[0]?.state !== "LIVE") return reply.code(400).send({ error: "This card is gone" });
-    await db.update(dropLimits).set({ state: "cancelled" }).where(and(eq(dropLimits.dropId, id), eq(dropLimits.userId, userId), eq(dropLimits.state, "open")));
-    const created = await db.insert(dropLimits).values({ dropId: id, userId, maxPrice }).returning();
-    return created[0];
+    return db.transaction(async (tx) => {
+      // Serialises this user's saves for this card, so two quick ones can't both insert an open order.
+      await tx.execute(sql`select pg_advisory_xact_lock(hashtext(${`limit:${userId}:${id}`}))`);
+      await tx.update(dropLimits).set({ state: "cancelled" }).where(and(eq(dropLimits.dropId, id), eq(dropLimits.userId, userId), eq(dropLimits.state, "open")));
+      const created = await tx.insert(dropLimits).values({ dropId: id, userId, maxPrice }).returning();
+      return created[0];
+    });
   });
 
   app.delete("/pulse/drops/:id/limit", async (request, reply) => {
@@ -590,7 +651,7 @@ export async function buildServer(opts: ServerOptions) {
     const userId = await userIdFrom(request);
     if (!requireUser(request, reply, userId)) return;
     if (!(await gateFeature(reply, userId))) return;
-    const { wallet, label } = request.body as { wallet: string; label?: string };
+    const { wallet, label } = (request.body ?? {}) as { wallet: string; label?: string };
     if (!/^[1-9A-HJ-NP-Za-km-z]{32,44}$/.test(wallet ?? "")) return reply.code(400).send({ error: "That is not a Solana address" });
     await db.insert(trackedWallets).values({ userId, wallet, label: (label || wallet.slice(0, 6)).slice(0, 32) }).onConflictDoNothing();
     return { ok: true };
@@ -642,7 +703,7 @@ export async function buildServer(opts: ServerOptions) {
     const userId = await userIdFrom(request);
     if (!requireUser(request, reply, userId)) return;
     if (!paper) return reply.code(404).send({ error: "Paper mode is off" });
-    const { tokens } = request.body as { tokens: number };
+    const { tokens } = (request.body ?? {}) as { tokens: number };
     const user = await loadUser(db, userId);
     const wallet = user!.holderWallet ?? user!.connectedWallet;
     if (!user!.holderWallet) await db.update(users).set({ holderWallet: wallet }).where(eq(users.id, userId));
@@ -656,10 +717,30 @@ export async function buildServer(opts: ServerOptions) {
 
   // Admin -----------------------------------------------------------------------
 
+  /**
+   * On a real chain, admin follows ADMIN_WALLETS on every request, so removing a wallet takes effect at once rather
+   * than when that person next signs in. Paper keeps its own flag for local use.
+   */
+  const isAdmin = (user: { isAdmin: boolean; connectedWallet: string }) => {
+    if (paper) return user.isAdmin;
+    return (process.env.ADMIN_WALLETS ?? "").split(",").map((w) => w.trim()).filter(Boolean).includes(user.connectedWallet);
+  };
+
+  /** Why new trades can't start right now, if they can't: the kill switch, or mainnet not armed. Nothing would sign them. */
+  const tradingPaused = async (): Promise<string | null> => {
+    const ops = await getSetting(db, "ops");
+    if (ops.killSwitch) return "Trading is paused right now. Try again soon.";
+    if (mode === "mainnet") {
+      const until = ops.armedUntil ? new Date(ops.armedUntil).getTime() : 0;
+      if (until <= Date.now() || new Set(ops.armedBy).size < 2) return "Trading is paused right now. Try again soon.";
+    }
+    return null;
+  };
+
   const requireAdmin = async (request: Parameters<typeof userIdFrom>[0], reply: { code: (n: number) => { send: (b: unknown) => unknown } }) => {
     const userId = await userIdFrom(request);
     const user = userId ? await loadUser(db, userId) : null;
-    if (!user?.isAdmin) {
+    if (!user || !isAdmin(user)) {
       reply.code(403).send({ error: "Admins only" });
       return null;
     }
@@ -678,8 +759,10 @@ export async function buildServer(opts: ServerOptions) {
     const stuck = await db.select({ n: count() }).from(holds).where(and(eq(holds.status, "active"), sql`${holds.createdAt} < now() - interval '5 minutes'`));
     const open = await db.select({ n: count() }).from(claims).where(eq(claims.state, "won"));
     const packs = await db.select({ n: count() }).from(ccPacks).where(gt(ccPacks.createdAt, new Date(Date.now() - 86_400_000)));
+    const moves = await db.select().from(treasuryMoves).orderBy(desc(treasuryMoves.createdAt)).limit(8);
+    const treasuryWallets = await loadJson<{ drops: string; cashback: string; feePayer: string }>(db, "treasuryWallets");
     return {
-      mode, settings: { drops: dropSettings, fees, cashback, flywheel }, ops, status, accounts, runs, checks, stateCounts,
+      mode, settings: { drops: dropSettings, fees, cashback, flywheel }, ops, status, accounts, runs, checks, stateCounts, moves, treasuryWallets,
       alerts: { stuckHolds: stuck[0]?.n ?? 0, openClaims: open[0]?.n ?? 0, packs24h: packs[0]?.n ?? 0 },
     };
   });
@@ -688,7 +771,7 @@ export async function buildServer(opts: ServerOptions) {
     if (!(await requireAdmin(request, reply))) return;
     const { key } = request.params as { key: "drops" | "fees" | "cashback" | "flywheel" };
     if (!["drops", "fees", "cashback", "flywheel"].includes(key)) return reply.code(400).send({ error: "Unknown settings" });
-    const body = request.body as Record<string, number>;
+    const body = (request.body ?? {}) as Record<string, number>;
     if (key === "flywheel") {
       const bps = ["accessBps", "giftHoldBps", "giftBps", "giftSpendBps", "saleBuybackBps", "platformFeeBps", "buybackMaxSlippageBps"] as const;
       if (bps.some((name) => body[name] !== undefined && !(Number.isInteger(body[name]) && body[name]! >= 0 && body[name]! <= 10_000))) {
@@ -705,11 +788,28 @@ export async function buildServer(opts: ServerOptions) {
 
   app.post("/admin/ops", async (request, reply) => {
     if (!(await requireAdmin(request, reply))) return;
-    const { killSwitch, reconcileHold } = request.body as { killSwitch?: boolean; reconcileHold?: boolean };
+    const { killSwitch, reconcileHold } = (request.body ?? {}) as { killSwitch?: boolean; reconcileHold?: boolean };
     const patch: Record<string, boolean> = {};
     if (typeof killSwitch === "boolean") patch.killSwitch = killSwitch;
     if (typeof reconcileHold === "boolean") patch.reconcileHold = reconcileHold;
     return setSetting(db, "ops", patch);
+  });
+
+  /**
+   * Records USDC an admin moved into or out of the Drops or Cashback wallet by hand, so the books follow. The worker
+   * reads the transaction and books exactly what moved; Tenner's own transactions are refused there.
+   */
+  app.post("/admin/treasury-moves", async (request, reply) => {
+    const admin = await requireAdmin(request, reply);
+    if (!admin) return;
+    if (mode === "paper") return reply.code(400).send({ error: "Paper treasury wallets are funded automatically" });
+    const { signature, wallet } = (request.body ?? {}) as { signature?: unknown; wallet?: unknown };
+    const sig = typeof signature === "string" ? signature.trim() : "";
+    if (!/^[1-9A-HJ-NP-Za-km-z]{64,90}$/.test(sig)) return reply.code(400).send({ error: "That is not a transaction signature" });
+    if (wallet !== "drops" && wallet !== "cashback") return reply.code(400).send({ error: "Pick the Drops or Cashback wallet" });
+    const rows = await db.insert(treasuryMoves).values({ signature: sig, wallet, createdBy: admin.id }).onConflictDoNothing().returning();
+    if (!rows[0]) return reply.code(409).send({ error: "That transaction is already recorded" });
+    return rows[0];
   });
 
   /** Mainnet signing needs two different admins, and the arm expires on its own. */
@@ -717,20 +817,26 @@ export async function buildServer(opts: ServerOptions) {
     const admin = await requireAdmin(request, reply);
     if (!admin) return;
     if (mode !== "mainnet") return reply.code(400).send({ error: "Arming only applies to mainnet" });
-    const ops = await getSetting(db, "ops");
-    const fresh = ops.armRequestedAt && Date.now() - new Date(ops.armRequestedAt).getTime() < 15 * 60_000;
-    const armedBy = [...new Set([...(fresh ? ops.armedBy : []), admin.id])];
-    const armedUntil = armedBy.length >= 2 ? new Date(Date.now() + 2 * 3_600_000).toISOString() : null;
-    return setSetting(db, "ops", { armedBy, armedUntil, armRequestedAt: new Date().toISOString() });
+    return db.transaction(async (tx) => {
+      // Two admins pressing at once must not overwrite each other.
+      await tx.execute(sql`select pg_advisory_xact_lock(7270013)`);
+      const ops = await getSetting(tx, "ops");
+      const waiting = ops.armRequestBy && ops.armRequestedAt && Date.now() - new Date(ops.armRequestedAt).getTime() < 15 * 60_000 ? ops.armRequestBy : null;
+      if (waiting && waiting !== admin.id) {
+        return setSetting(tx, "ops", { armedBy: [waiting, admin.id], armedUntil: new Date(Date.now() + 2 * 3_600_000).toISOString(), armRequestBy: null, armRequestedAt: null });
+      }
+      // The first press, or the same admin again: a request that waits for someone else. The current arm stands.
+      return setSetting(tx, "ops", { armRequestBy: admin.id, armRequestedAt: new Date().toISOString() });
+    });
   });
 
   app.post("/admin/disarm", async (request, reply) => {
     if (!(await requireAdmin(request, reply))) return;
-    return setSetting(db, "ops", { armedBy: [], armedUntil: null, armRequestedAt: null });
+    return setSetting(db, "ops", { armedBy: [], armedUntil: null, armRequestedAt: null, armRequestBy: null });
   });
 
   // The $TENR flywheel: its public page and gift claims (docs/FLYWHEEL.md).
-  flywheelRoutes(app, { database, accessRefusal });
+  flywheelRoutes(app, { database, accessRefusal, tradingPaused });
 
   return app;
 }

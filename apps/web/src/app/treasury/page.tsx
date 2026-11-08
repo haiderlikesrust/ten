@@ -83,7 +83,7 @@ function DrawRow({ draw }: { draw: Draw }) {
         <span className="min-w-0 truncate text-[13.5px]">
           {won ? (
             <>
-              <b>{money(draw.prize, true)} {draw.machineCode ? packLabel(draw.machineCode) : ""}</b>
+              <b>{draw.machineCode ? packLabel(draw.machineCode) : money(draw.prize, true)} pack</b>
               <span className="text-mute"> to </span>
               <span className="num">{short(draw.winner)}</span>
               {draw.state === "expired" ? <span className="text-faint"> · unclaimed, back in the pool</span> : draw.state === "claimed" ? <span className="text-faint"> · claimed</span> : null}

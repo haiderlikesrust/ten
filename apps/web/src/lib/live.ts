@@ -143,7 +143,8 @@ export function connectStream(): void {
       if (useLive.getState().seq === null) useLive.setState({ seq: event.payload.seq as number });
       return;
     }
-    if (event.seq) useLive.setState({ seq: event.seq });
+    // A late-committed event can arrive after a newer one, so keep the highest.
+    if (event.seq) useLive.setState((s) => ({ seq: Math.max(s.seq ?? 0, event.seq!) }));
     if (event.topic === "drops") dropHandlers.forEach((handler) => handler(event.payload));
     if (event.topic.startsWith("user:")) userHandlers.forEach((handler) => handler(event.payload));
     else useLive.getState().apply(event.topic, event.payload);

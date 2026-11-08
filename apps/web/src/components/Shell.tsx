@@ -330,7 +330,7 @@ function StatusBar() {
       <span className="ml-auto hidden items-center gap-1 2xl:flex">
         <kbd className="num rounded bg-bone/[0.07] px-1 text-[11px]">Ctrl K</kbd> search
         <kbd className="num ml-2 rounded bg-bone/[0.07] px-1 text-[11px]">S</kbd> buy newest
-        <kbd className="num ml-2 rounded bg-bone/[0.07] px-1 text-[11px]">1-8</kbd> pages
+        <kbd className="num ml-2 rounded bg-bone/[0.07] px-1 text-[11px]">1-{NAV.length}</kbd> pages
       </span>
       <a href="https://www.tradingview.com/" target="_blank" rel="noreferrer noopener" className="ml-2 hidden hover:text-bone xl:inline">Charts by TradingView</a>
       <button type="button" onClick={() => useUi.getState().setTourOpen(true)} className="ml-auto hidden items-center gap-1 hover:text-bone md:inline-flex xl:ml-2"><Compass size={12} aria-hidden="true" /> Tour</button>

@@ -331,6 +331,26 @@ describe("hidden drops", () => {
     await assertBooksBalance(venue);
   });
 
+  it("refunds a winner who already paid when no fresh pack can be reserved", async () => {
+    const venue = createPaperVenue(t.db);
+    const ctx = makeCtx(venue);
+    await fund(venue, "drops", usd(1000));
+    const userId = await makeUser(venue, usd(100));
+    const drop = await hiddenDrop(ctx);
+    await claim(userId, drop.id);
+    await drive(ctx, drop.id, ["PACK_PAYING"]);
+    // The first pack payment burns, so the drop goes back for a fresh pack with the winner's money already taken.
+    const retry = await drive(makeCtx(createPaperVenue(t.db, { faults: { send_failed: 1 }, rng: rng(9) })), drop.id, ["QUOTED"]);
+    expect(retry.packPayAttempts).toBe(1);
+    // Then the machine is down, so no fresh pack can be reserved.
+    const stuck = await drive(makeCtx(createPaperVenue(t.db, { faults: { machine_down: 1 }, rng: rng(10) })), drop.id, ["REFUND_DUE", "VOID"]);
+    expect(stuck.state).toBe("REFUND_DUE");
+    const done = await drive(ctx, drop.id, ["REFUNDED"]);
+    expect(done.state).toBe("REFUNDED");
+    expect(await balanceOf(t.db, userAccount(userId))).toBe(usd(100));
+    await assertBooksBalance(venue);
+  });
+
   it("waits for CC's refund on a dead pack, so a late open cannot pay twice", async () => {
     const venue = createPaperVenue(t.db, { faults: { open_dead: 1 }, rng: rng(4) });
     const ctx = makeCtx(venue);
@@ -576,6 +596,21 @@ describe("deposit sync", () => {
     await venue.faucet(userAccount(userId), usd(0.75));
     await tickBalances(ctx);
     expect(await balanceOf(t.db, userAccount(userId))).toBe(usd(10));
+  });
+});
+
+describe("cashback", () => {
+  it("skips a payout the pool can no longer cover, instead of sending one that fails", async () => {
+    const venue = createPaperVenue(t.db);
+    const ctx = makeCtx(venue);
+    const userId = await makeUser(venue, usd(10));
+    const pool = await balanceOf(t.db, "cashback");
+    const [accrual] = await t.db.insert(cashbackAccruals).values({ userId, memo: `cb-${randomUUID()}`, machineCode: "pokemon_25", packPrice: usd(25), rateBps: 200, amount: pool + usd(1) }).returning();
+    await tickCashback(ctx);
+    expect((await t.db.select().from(cashbackAccruals).where(eq(cashbackAccruals.id, accrual!.id)))[0]!.status).toBe("skipped");
+    // Nothing was sent or booked for it. Other tests may leave payouts that do go out on this tick.
+    expect(await t.db.select().from(chainTx).where(eq(chainTx.ref, accrual!.id))).toHaveLength(0);
+    expect(await t.db.select().from(ledgerEntries).where(eq(ledgerEntries.ref, `cashback:${accrual!.id}`))).toHaveLength(0);
   });
 });
 

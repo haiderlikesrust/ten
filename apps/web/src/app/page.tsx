@@ -78,7 +78,7 @@ export default function PulsePage() {
           columns={[
             {
               key: "new", title: "New Pulls", dot: "bg-teal", count: fresh.length, right: tools("new", "New Pulls", fresh),
-              children: !ready ? <Skeleton /> : fresh.length > 0 ? fresh.slice(0, VISIBLE).map((card) => <PulseRow key={card.id} id={card.id} />) : isFiltered("new") ? <NoMatch column="new" /> : <Empty title={status?.pausedFor ? "New cards are paused" : "Waiting for a pull"} icon={<Sparkles size={22} aria-hidden="true" />}>{status?.pausedFor ? `Paused because the ${pauseReason(status.pausedFor)}.` : "Fresh cards land here the moment a pack opens."}</Empty>,
+              children: !ready ? <Skeleton /> : fresh.length > 0 ? fresh.slice(0, VISIBLE).map((card) => <PulseRow key={card.id} id={card.id} />) : isFiltered("new") ? <NoMatch column="new" /> : <Empty title={status?.pausedFor ? "New cards are paused" : "Waiting for a pull"} icon={<Sparkles size={22} aria-hidden="true" />}>{status?.pausedFor ? `Paused because ${pauseReason(status.pausedFor)}.` : "Fresh cards land here the moment a pack opens."}</Empty>,
             },
             {
               key: "live", title: "Live Prices", dot: "bg-volt", count: live.length, right: tools("live", "Live Prices", live),

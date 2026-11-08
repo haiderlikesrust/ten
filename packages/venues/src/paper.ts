@@ -4,7 +4,7 @@ import { and, ccPacks, eq, isNull, machines, paperChain, paperTx, poolCards, sql
 import {
   AddressBlocked, AmbiguousSend, MachineDown, type BuybackQuote, type ChainOp, type ChainVenue, type FeeVenue,
   type GachaVenue, type GeneratedPack, type MarketVenue, type OpenResult, type PaidPack, type Party, type PreparedTx, type Role,
-  type TxStatus, type Venue,
+  type TxStatus, type UsdcMoved, type Venue,
 } from "./types";
 
 export type Fault =
@@ -176,6 +176,11 @@ class PaperChainVenue implements ChainVenue {
   async usdcBalance(party: Party): Promise<Micros> {
     const rows = await this.db.select({ micros: paperChain.micros }).from(paperChain).where(eq(paperChain.account, accountOf(party)));
     return rows[0]?.micros ?? 0;
+  }
+
+  /** Paper money only moves through Tenner, so there is never an outside transfer to read. */
+  async usdcMoved(): Promise<UsdcMoved> {
+    return { status: "missing" };
   }
 
   async tokenBalance(wallet: string): Promise<number> {

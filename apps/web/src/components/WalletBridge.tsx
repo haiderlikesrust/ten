@@ -84,9 +84,9 @@ function Bridge() {
         signOut: logout,
         exportKey: () => exportWallet({ address: embedded?.address ?? "" }),
         // Pops the user's own wallet, because only they can move a card it holds.
-        signWithMain: async (base64) => {
-          const main = wallets.find((w) => w.address !== embedded?.address);
-          if (!main) throw new Error("Connect your main wallet");
+        signWithMain: async (base64, address) => {
+          const main = address ? wallets.find((w) => w.address === address) : wallets.find((w) => w.address !== embedded?.address);
+          if (!main) throw new Error(address ? `Open the wallet you signed in with (${address.slice(0, 4)}…${address.slice(-4)}) and try again` : "Connect your main wallet");
           const bytes = Uint8Array.from(atob(base64), (c) => c.charCodeAt(0));
           const { signedTransaction } = await signTransaction({ transaction: bytes, wallet: main });
           return btoa(String.fromCharCode(...signedTransaction));

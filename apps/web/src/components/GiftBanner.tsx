@@ -42,7 +42,7 @@ export function GiftBanner() {
     <div role="status" className="px-box mx-2 mb-2 flex shrink-0 flex-wrap items-center gap-x-3 gap-y-2 px-3.5 py-2 text-[13.5px] sm:mx-3">
       <span className="text-gold"><PixelIcon name="pack" /></span>
       <span className="min-w-0 flex-1">
-        <span className="font-semibold text-bone">You won a {money(gift.prize, true)} {gift.machineCode ? packLabel(gift.machineCode) : ""} pack.</span>{" "}
+        <span className="font-semibold text-bone">You won a {gift.machineCode ? packLabel(gift.machineCode) : money(gift.prize, true)} pack.</span>{" "}
         <span className="text-mute">
           Claim it within <span className="num text-bone">{hours}h {minutes}m</span>. <Link href="/treasury" className="underline hover:text-bone">How draws work</Link>
         </span>

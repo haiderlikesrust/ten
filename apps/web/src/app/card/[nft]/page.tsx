@@ -1,7 +1,7 @@
 "use client";
 
 import { BRAND, shortAddress } from "@gemdex/core";
-import { useMutation, useQuery } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Eye } from "lucide-react";
 import Link from "next/link";
 import { useParams } from "next/navigation";
@@ -110,9 +110,16 @@ export default function CardPage() {
   const { buy } = useTrade();
   const me = useMe();
   const toast = useUi((s) => s.toast);
+  const client = useQueryClient();
+  const watched = useQuery({ queryKey: ["watchlist"], enabled: !!me, queryFn: () => api<Array<{ nft: string }>>("/watchlist") });
+  const watching = !!watched.data?.some((row) => row.nft === nft);
   const watch = useMutation({
     mutationFn: () => api<{ watching: boolean }>(`/watchlist/${nft}`, { method: "POST" }),
-    onSuccess: ({ watching }) => toast({ tone: "info", title: watching ? "Added to watchlist" : "Removed from watchlist" }),
+    onSuccess: ({ watching: now }) => {
+      toast({ tone: "info", title: now ? "Added to watchlist" : "Removed from watchlist" });
+      void client.invalidateQueries({ queryKey: ["watchlist"] });
+    },
+    onError: (error) => toast({ tone: "bad", title: "Could not change the watchlist", detail: (error as Error).message }),
   });
 
   if (query.isError) return <Empty title="Card not found">It may have been redeemed or burned.</Empty>;
@@ -163,7 +170,7 @@ export default function CardPage() {
             </div>
             <div className="mt-4 flex flex-wrap gap-2">
               {listing?.active !== false && listing ? <Button tone="snipe" className="h-11" onClick={() => void buy(listing)}>{BOLT} Buy for <span className="num text-[16px] font-bold">{money(listing.price)}</span></Button> : null}
-              <Button className="h-11" disabled={!me} onClick={() => watch.mutate()}><Eye size={16} aria-hidden="true" /> Watch</Button>
+              <Button className="h-11" disabled={!me} onClick={() => watch.mutate()}><Eye size={16} aria-hidden="true" /> {watching ? "Watching" : "Watch"}</Button>
               <a href={`https://collectorcrypt.com/assets/solana/${nft}`} target="_blank" rel="noreferrer noopener" className="inline-flex h-11 items-center px-cut bg-raised px-3.5 font-semibold hover:bg-raised-2">Make an offer</a>
             </div>
             {owner?.wallet ? <p className="mt-3 text-[13px] text-faint">Held by {owner.name ? `@${owner.name}` : shortAddress(owner.wallet)}</p> : null}
@@ -176,7 +183,7 @@ export default function CardPage() {
             {charted ? <div className="px-2 pb-2"><PriceChart data={data} /></div> : null}
             {history.length === 0 ? (
               <p className="px-3.5 pb-3.5 text-[13.5px] text-faint">
-                {charted ? "No sales recorded yet." : "No history yet. Collector Crypt publishes no sales history, so {BRAND.name} records its own as this card trades."}
+                {charted ? "No sales recorded yet." : `No history yet. Collector Crypt publishes no sales history, so ${BRAND.name} records its own as this card trades.`}
               </p>
             ) : (
               <ul className="flex flex-col gap-1 px-2 pb-2">

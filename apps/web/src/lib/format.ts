@@ -3,10 +3,11 @@ import { formatUsd } from "@gemdex/core";
 export const money = (micros: number | null | undefined, compact = false): string =>
   micros === null || micros === undefined ? "–" : formatUsd(micros, { compact });
 
+/** Each reads as a whole clause, alone as a hint or after "Paused because". */
 const PAUSE_REASONS: Record<string, string> = {
-  disabled: "turned off in Admin",
-  kill_switch: "kill switch is on",
-  reconcile_mismatch: "balance check found a difference",
+  disabled: "new cards are turned off in Admin",
+  kill_switch: "the kill switch is on",
+  reconcile_mismatch: "the balance check found a difference",
   wallet_floor: "the Pulse pool is low",
   daily_cap: "today's spend cap is reached",
 };

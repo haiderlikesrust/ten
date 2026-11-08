@@ -56,7 +56,6 @@ export default function WalletPage() {
   const setConnectOpen = useUi((s) => s.setConnectOpen);
   const toast = useUi((s) => s.toast);
   const [limit, setLimit] = useState("");
-  const [presets, setPresets] = useState("");
   const [forward, setForward] = useState(false);
   const [withdrawTo, setWithdrawTo] = useState("");
   const [withdrawAmount, setWithdrawAmount] = useState("");
@@ -65,7 +64,6 @@ export default function WalletPage() {
   useEffect(() => {
     if (!me) return;
     setLimit(me.settings.tradeLimitUsd ? String(me.settings.tradeLimitUsd) : "");
-    setPresets((me.settings.quickBuy ?? [25, 50, 100]).join(", "));
     setForward(!!me.settings.autoForward);
   }, [me?.id]); // eslint-disable-line react-hooks/exhaustive-deps
 
@@ -83,7 +81,6 @@ export default function WalletPage() {
         body: {
           tradeLimitUsd: limit ? Number(limit) : undefined,
           autoForward: forward,
-          quickBuy: presets.split(",").map((n) => Number(n.trim())).filter((n) => n > 0).slice(0, 5),
         },
       }),
     onSuccess: () => {
@@ -146,7 +143,7 @@ export default function WalletPage() {
                 {paper ? (
                   <p className="mt-2.5 px-cut bg-raised p-2.5 text-[13px] text-faint">Paper wallets are simulated and have no key to export.</p>
                 ) : (
-                  <Button className="mt-2.5" onClick={() => void wallet?.exportKey()}>Export key</Button>
+                  <Button className="mt-2.5" disabled={!wallet} onClick={() => void wallet?.exportKey().catch((error: Error) => toast({ tone: "bad", title: "Could not open the key window", detail: error.message }))}>Export key</Button>
                 )}
               </div>
             </section>
@@ -158,13 +155,18 @@ export default function WalletPage() {
                   className="flex flex-col gap-2.5 px-4 pb-4"
                   onSubmit={(event) => {
                     event.preventDefault();
+                    // Money on hold is already promised to a buy that is settling; taking it would fail that buy.
+                    if (Number(withdrawAmount) * 1e6 > me.available) {
+                      toast({ tone: "bad", title: "More than you have available", detail: `You can withdraw up to ${money(me.available)}. The rest is on hold for buys that are settling.` });
+                      return;
+                    }
                     void wallet?.withdraw(withdrawTo.trim(), Number(withdrawAmount)).then(() => toast({ tone: "ok", title: "Withdrawal sent" })).catch((error: Error) => toast({ tone: "bad", title: "Withdrawal failed", detail: error.message }));
                   }}
                 >
                   <Field label="To address"><input className={inputClass} value={withdrawTo} onChange={(e) => setWithdrawTo(e.target.value)} placeholder={me.connectedWallet} /></Field>
                   <Field label="Amount (USDC)"><input className={inputClass} inputMode="decimal" value={withdrawAmount} onChange={(e) => setWithdrawAmount(e.target.value)} /></Field>
                   <Button type="submit" disabled={!wallet || !withdrawTo || !(Number(withdrawAmount) > 0)}>Withdraw</Button>
-                  <p className="text-[12.5px] text-faint">You approve this yourself. The server can never send your funds anywhere.</p>
+                  <p className="text-[12.5px] text-faint">You approve this yourself. The server can never send your funds anywhere. Your trading wallet pays the network fee, so it needs a little SOL (about 0.003).</p>
                 </form>
               </section>
             ) : null}
@@ -179,7 +181,6 @@ export default function WalletPage() {
                 }}
               >
                 <Field label="Max per trade (USDC)" hint="Blocks any single marketplace buy above this"><input className={inputClass} inputMode="decimal" placeholder="No limit" value={limit} onChange={(e) => setLimit(e.target.value)} /></Field>
-                <Field label="Quick-buy presets"><input className={inputClass} value={presets} onChange={(e) => setPresets(e.target.value)} /></Field>
                 <Button type="submit" disabled={save.isPending}>Save</Button>
               </form>
             </section>

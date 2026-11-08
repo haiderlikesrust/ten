@@ -97,16 +97,23 @@ export async function privySession(db: Db, accessToken: string): Promise<{ userI
   if (!embedded.delegated) return { error: "Approve one-click trading first" };
 
   const admins = (process.env.ADMIN_WALLETS ?? "").split(",").map((w) => w.trim()).filter(Boolean);
+  // The wallet they signed in with is proven theirs, so its $TENR counts toward their holder tier and cashback.
+  // Nothing else sets a holder wallet on a real chain. One wallet can only back one account.
+  const holderFor = async (userId?: string) => {
+    const taken = await db.select({ id: users.id }).from(users).where(eq(users.holderWallet, external.address!));
+    return !taken[0] || taken[0].id === userId ? external.address! : null;
+  };
   const existing = await db.select().from(users).where(eq(users.privyDid, person.id));
   if (existing[0]) {
-    await db.update(users).set({ connectedWallet: external.address, privyWalletId: embedded.id ?? null, isAdmin: admins.includes(external.address) }).where(eq(users.id, existing[0].id));
+    const holderWallet = existing[0].holderWallet ?? (await holderFor(existing[0].id));
+    await db.update(users).set({ connectedWallet: external.address, privyWalletId: embedded.id ?? null, isAdmin: admins.includes(external.address), holderWallet }).where(eq(users.id, existing[0].id));
     return { userId: existing[0].id };
   }
   const created = await db
     .insert(users)
     .values({
       privyDid: person.id, privyWalletId: embedded.id ?? null, handle: external.address.slice(0, 6), tradingWallet: embedded.address,
-      connectedWallet: external.address, isAdmin: admins.includes(external.address),
+      connectedWallet: external.address, isAdmin: admins.includes(external.address), holderWallet: await holderFor(),
     })
     .returning({ id: users.id });
   return { userId: created[0]!.id };

@@ -14,6 +14,8 @@ export interface OpsFlags {
   armedBy: string[];
   /** First admin must be joined by a second within minutes, or the request lapses. */
   armRequestedAt: string | null;
+  /** The admin whose arm request is waiting for a second admin. */
+  armRequestBy: string | null;
 }
 
 export interface Settings {
@@ -29,7 +31,7 @@ const DEFAULTS: Settings = {
   fees: DEFAULT_FEE_SETTINGS,
   cashback: DEFAULT_CASHBACK_SETTINGS,
   flywheel: DEFAULT_FLYWHEEL_SETTINGS,
-  ops: { killSwitch: false, reconcileHold: false, armedUntil: null, armedBy: [], armRequestedAt: null },
+  ops: { killSwitch: false, reconcileHold: false, armedUntil: null, armedBy: [], armRequestedAt: null, armRequestBy: null },
 };
 
 export async function getSetting<K extends keyof Settings>(db: DbOrTx, key: K): Promise<Settings[K]> {

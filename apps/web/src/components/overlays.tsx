@@ -119,7 +119,9 @@ export function ConnectModal() {
           <Logo size={26} />
           <div className="pixel text-[18px] uppercase">{BRAND.name}</div>
         </div>
-        {meta.data?.paper !== false ? (
+        {!meta.data ? (
+          <p className="text-mute">Loading</p>
+        ) : meta.data.paper ? (
           <>
             <div>
               <h2 className="text-[20px] font-bold tracking-tight">Start paper trading</h2>

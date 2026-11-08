@@ -94,7 +94,7 @@ The groups take turns, one per draw: **active → long holders → top blasters*
 - The access minimum is checked again at claim time.
 - The prize amount is set aside at the draw (`gifts` → `gift_reserved`). If it isn't claimed within 24 hours, it returns to the pool.
 
-## 4. Public flywheel page (`/flywheel`)
+## 4. Public Treasury page (`/treasury`)
 
 - Live pools: drops, cashback, gifts, revenue waiting for buyback.
 - Recent draws: group, prize, winner (short wallet), entries and seed, plus a "verify" link.
@@ -117,7 +117,7 @@ The ledger gains three accounts: `gifts`, `gift_reserved` and `revenue`.
 2. The fee split with the gift pool, and the `flywheel` settings with their Admin editing.
 3. Gift draws: eligibility, streaks, commit and reveal, claim, expiry, and the user notification.
 4. The platform fee, then the buyback and burn steps (chain ops plus paper versions).
-5. The `/flywheel` page.
+5. The `/treasury` page.
 6. Tests for each, plus a paper-mode run of the whole loop.
 
 ## Open items

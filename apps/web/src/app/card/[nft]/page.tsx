@@ -140,7 +140,7 @@ export default function CardPage() {
 
   return (
     <div className="h-full overflow-y-auto">
-      <div className="grid grid-cols-1 gap-2 px-2 pb-2 sm:px-3 lg:grid-cols-[360px_minmax(0,1fr)]">
+      <div className="mx-auto w-full max-w-[1360px] grid grid-cols-1 gap-2 px-2 pb-2 sm:px-3 lg:grid-cols-[360px_minmax(0,1fr)]">
         <section className="slab self-start p-4">
           {photo ? <CardPhoto src={sized(photo, 320)!} full={full} alt={name} /> : null}
           <div className="mt-3 flex flex-wrap items-center gap-1.5">

@@ -111,7 +111,7 @@ export default function AutoPage() {
   const list = rules.data ?? [];
   return (
     <div className="h-full overflow-y-auto">
-      <div className="flex flex-col gap-2 px-2 pb-2 sm:px-3">
+      <div className="mx-auto w-full max-w-[1360px] flex flex-col gap-2 px-2 pb-2 sm:px-3">
         <PageHeader title="Auto-Buy" subtitle="Rules watch every new listing and buy the moment one matches." />
 
         <section aria-label="Templates" className="grid grid-cols-1 gap-2 sm:grid-cols-2 xl:grid-cols-4">

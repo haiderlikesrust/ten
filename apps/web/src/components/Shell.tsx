@@ -2,7 +2,7 @@
 
 import { BRAND } from "@gemdex/core";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { Bot, Compass, FileText, Gift, RefreshCw, LayoutGrid, LogOut, Moon, Radar, Settings2, Sun, Wallet, type LucideIcon } from "lucide-react";
+import { Bot, Compass, FileText, Gift, Landmark, LayoutGrid, LogOut, Moon, Radar, Settings2, Sun, Wallet, type LucideIcon } from "lucide-react";
 import dynamic from "next/dynamic";
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
@@ -335,7 +335,7 @@ function StatusBar() {
       </span>
       <a href="https://www.tradingview.com/" target="_blank" rel="noreferrer noopener" className="ml-2 hidden hover:text-bone xl:inline">Charts by TradingView</a>
       <button type="button" onClick={() => useUi.getState().setTourOpen(true)} className="ml-auto hidden items-center gap-1 hover:text-bone md:inline-flex xl:ml-2"><Compass size={12} aria-hidden="true" /> Tour</button>
-      <Link href="/flywheel" className="hidden items-center gap-1 hover:text-bone md:inline-flex"><RefreshCw size={12} aria-hidden="true" /> Flywheel</Link>
+      <Link href="/treasury" className="hidden items-center gap-1 hover:text-bone md:inline-flex"><Landmark size={12} aria-hidden="true" /> Treasury</Link>
       <Link href="/terms" className="hidden items-center gap-1 hover:text-bone md:inline-flex"><FileText size={12} aria-hidden="true" /> Terms</Link>
       <span className="ml-auto md:ml-0"><ThemeButton /></span>
     </footer>
@@ -389,7 +389,7 @@ function MoreSheet({ onClose }: { onClose: () => void }) {
           <Link key={href} href={href} onClick={onClose} className={menuItem}><PixelIcon name={icon} /> {label}</Link>
         ))}
         <button type="button" className={menuItem} onClick={() => { onClose(); useUi.getState().setTourOpen(true); }}><Compass size={16} aria-hidden="true" /> How {BRAND.name} works</button>
-        <Link href="/flywheel" onClick={onClose} className={menuItem}><RefreshCw size={16} aria-hidden="true" /> Flywheel</Link>
+        <Link href="/treasury" onClick={onClose} className={menuItem}><Landmark size={16} aria-hidden="true" /> Treasury</Link>
         <Link href="/terms" onClick={onClose} className={menuItem}><FileText size={16} aria-hidden="true" /> Terms and risks</Link>
         <div className="rule my-1" />
         {me ? <MenuLinks onClose={onClose} /> : (
@@ -421,7 +421,8 @@ export function Shell({ children }: { children: ReactNode }) {
   }, []);
 
   return (
-    <div className="flex h-dvh flex-col overflow-hidden">
+    // On very wide screens the app stops widening and sits in the middle, instead of stretching every panel.
+    <div className="mx-auto flex h-dvh w-full max-w-[1760px] flex-col overflow-hidden">
       <header className="relative z-40 flex h-[60px] shrink-0 items-center justify-between gap-1.5 px-2 sm:px-3 xl:grid xl:grid-cols-[1fr_auto_1fr] xl:gap-2">
         <div className="flex min-w-0 justify-start">
           <Link href="/" aria-label={`${BRAND.name} home`} className="px-box flex h-[46px] shrink-0 items-center gap-2 pl-2.5 pr-3 transition hover:brightness-110">

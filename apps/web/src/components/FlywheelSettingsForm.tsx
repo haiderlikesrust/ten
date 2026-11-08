@@ -59,7 +59,7 @@ export function FlywheelSettingsForm({ settings }: { settings: FlywheelSettings 
       return api("/admin/settings/flywheel", { method: "PATCH", body });
     },
     onSuccess: () => {
-      toast({ tone: "ok", title: "Flywheel saved" });
+      toast({ tone: "ok", title: "Treasury settings saved" });
       void client.invalidateQueries({ queryKey: ["admin"] });
     },
     onError: (error) => toast({ tone: "bad", title: (error as Error).message }),
@@ -67,7 +67,7 @@ export function FlywheelSettingsForm({ settings }: { settings: FlywheelSettings 
 
   return (
     <form className="slab" onSubmit={(e) => { e.preventDefault(); save.mutate(); }}>
-      <SectionTitle right={<Button tone="primary" type="submit" className="h-8" disabled={save.isPending}>Save</Button>}>Flywheel</SectionTitle>
+      <SectionTitle right={<Button tone="primary" type="submit" className="h-8" disabled={save.isPending}>Save</Button>}>Treasury</SectionTitle>
       <div className="grid grid-cols-1 gap-3 px-4 pb-3 sm:grid-cols-2">
         {[...PERCENT, ...COUNT, "buybackMinUsd" as const].map((key) => (
           <Field key={key} label={LABELS[key]}>

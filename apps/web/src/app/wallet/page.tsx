@@ -104,7 +104,7 @@ export default function WalletPage() {
   const paper = meta.data?.paper;
   return (
     <div className="h-full overflow-y-auto">
-      <div className="flex flex-col gap-2 px-2 pb-2 sm:px-3">
+      <div className="mx-auto w-full max-w-[1360px] flex flex-col gap-2 px-2 pb-2 sm:px-3">
         <PageHeader title="Trading wallet" subtitle="Pays for Pulse and marketplace buys in one click. Keep only what you plan to trade in it." />
 
         <section className="grid grid-cols-3 gap-2">

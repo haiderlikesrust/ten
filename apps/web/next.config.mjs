@@ -21,6 +21,9 @@ const config = {
     formats: ["image/webp"],
     minimumCacheTTL: 86400,
   },
+  async redirects() {
+    return [{ source: "/flywheel", destination: "/treasury", permanent: true }];
+  },
   async headers() {
     return [{
       source: "/(.*)",

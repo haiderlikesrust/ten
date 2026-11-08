@@ -88,7 +88,7 @@ export default function AdminPage() {
 
   return (
     <div className="h-full overflow-y-auto">
-      <div className="flex flex-col gap-2 px-2 pb-2 sm:px-3">
+      <div className="mx-auto w-full max-w-[1360px] flex flex-col gap-2 px-2 pb-2 sm:px-3">
         <PageHeader
           title="Operations"
           right={

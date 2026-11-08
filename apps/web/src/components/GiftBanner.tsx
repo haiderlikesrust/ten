@@ -44,7 +44,7 @@ export function GiftBanner() {
       <span className="min-w-0 flex-1">
         <span className="font-semibold text-bone">You won a {money(gift.prize, true)} {gift.machineCode ? packLabel(gift.machineCode) : ""} pack.</span>{" "}
         <span className="text-mute">
-          Claim it within <span className="num text-bone">{hours}h {minutes}m</span>. <Link href="/flywheel" className="underline hover:text-bone">How draws work</Link>
+          Claim it within <span className="num text-bone">{hours}h {minutes}m</span>. <Link href="/treasury" className="underline hover:text-bone">How draws work</Link>
         </span>
       </span>
       <Button tone="snipe" className="h-8 px-3 text-[12px]" disabled={claim.isPending} onClick={() => claim.mutate(gift.id)}>

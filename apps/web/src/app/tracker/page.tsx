@@ -110,7 +110,7 @@ export default function TrackerPage() {
 
   return (
     <div className="h-full overflow-y-auto">
-      <div className="flex flex-col gap-2 px-2 pb-2 sm:px-3">
+      <div className="mx-auto w-full max-w-[1360px] flex flex-col gap-2 px-2 pb-2 sm:px-3">
         <PageHeader title="Tracker" subtitle="See who is pulling the most right now, and follow any wallet's pulls and listings." />
         <form
           className="slab flex flex-wrap items-center gap-2 p-2"

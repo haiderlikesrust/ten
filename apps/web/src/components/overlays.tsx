@@ -149,7 +149,7 @@ export function ConnectModal() {
 
 const PAGES = [
   ["Pulse", "/"], ["Scanner", "/scanner"], ["Market", "/market"], ["Gacha Desk", "/gacha"], ["Portfolio", "/portfolio"], ["Trading wallet", "/wallet"],
-  ["Tracker", "/tracker"], ["Auto-Buy", "/auto"], ["Rewards", "/rewards"], ["Flywheel", "/flywheel"], ["Admin", "/admin"], ["Terms and risks", "/terms"],
+  ["Tracker", "/tracker"], ["Auto-Buy", "/auto"], ["Rewards", "/rewards"], ["Treasury", "/treasury"], ["Admin", "/admin"], ["Terms and risks", "/terms"],
 ] as const;
 
 export function CommandPalette() {

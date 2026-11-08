@@ -73,7 +73,7 @@ export default function RewardsPage() {
 
   return (
     <div className="h-full overflow-y-auto">
-      <div className="flex flex-col gap-2 px-2 pb-2 sm:px-3">
+      <div className="mx-auto w-full max-w-[1360px] flex flex-col gap-2 px-2 pb-2 sm:px-3">
         <PageHeader title="Rewards" subtitle={`Hold ${BRAND.tokenTicker} and earn USDC back every time you open a pack.`} />
 
         <section className="slab grid grid-cols-1 gap-4 p-4 lg:grid-cols-[minmax(0,1fr)_auto]" aria-label="Your tier">

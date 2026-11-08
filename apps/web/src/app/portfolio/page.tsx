@@ -415,7 +415,7 @@ export default function PortfolioPage() {
 
   return (
     <div className="h-full overflow-y-auto">
-      <div className="grid grid-cols-1 gap-2 px-2 pb-2 sm:px-3 xl:grid-cols-[minmax(0,1fr)_340px]">
+      <div className="mx-auto w-full max-w-[1360px] grid grid-cols-1 gap-2 px-2 pb-2 sm:px-3 xl:grid-cols-[minmax(0,1fr)_340px]">
         <div className="min-w-0 xl:col-start-1">
           <Overview data={query.data} held={held} exited={exited} balance={me.balance} handle={me.handle} />
         </div>

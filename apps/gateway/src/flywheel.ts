@@ -39,7 +39,7 @@ export function flywheelRoutes(app: FastifyInstance, { database, accessRefusal }
     return {
       pools: { drops, cashback, gifts, giftReserved, revenue },
       rules: {
-        accessBps: settings.accessBps, giftHoldBps: settings.giftHoldBps, giftBps: settings.giftBps, giftIntervalMin: settings.giftIntervalMin,
+        accessBps: settings.accessBps, giftHoldBps: settings.giftHoldBps, giftBps: settings.giftBps, giftSpendBps: settings.giftSpendBps, giftIntervalMin: settings.giftIntervalMin,
         giftTiers: settings.giftTiers, activePacksPerHour: settings.activePacksPerHour, topBlasters: settings.topBlasters, blasterDays: settings.blasterDays,
         claimHours: settings.claimHours, platformFeeBps: settings.platformFeeBps, giftsEnabled: settings.giftsEnabled, buybackEnabled: settings.buybackEnabled,
       },

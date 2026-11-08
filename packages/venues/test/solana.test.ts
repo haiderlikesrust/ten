@@ -3,6 +3,7 @@ import path from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { setSetting } from "@gemdex/db";
 import { Connection, Keypair, PublicKey, Transaction, VersionedTransaction } from "@solana/web3.js";
+import bs58 from "bs58";
 import { createSigner, LocalSigner, type AnyTx, type Signer } from "../src/signers";
 import { assertArmed, assertCluster, buildSolanaVenue, createSolanaVenue, GENESIS } from "../src/solana";
 import { CC_DEVNET, role, trader, type Party } from "../src/index";
@@ -32,8 +33,9 @@ describe("mainnet stays locked", () => {
     await expect(createSolanaVenue("mainnet", t.db, { ALLOW_MAINNET: "yes", SOLANA_RPC_URL: "http://x" } as never)).rejects.toThrow(/mainnet is locked/);
   });
 
-  it("refuses local keys on mainnet, even if they are provided", async () => {
-    await expect(createSigner("mainnet", t.db, { GEMDEX_ROLE_KEYS: "{}" } as never)).rejects.toThrow(/Local keys are refused/);
+  it("refuses mainnet without Privy, even with treasury keys provided", async () => {
+    const key = bs58.encode(Keypair.generate().secretKey);
+    await expect(createSigner("mainnet", t.db, { TREASURY_KEY_DROPS: key } as never)).rejects.toThrow(/mainnet needs Privy/);
   });
 
   it("needs two different admins, unexpired, and no kill switch", async () => {

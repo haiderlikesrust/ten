@@ -956,6 +956,9 @@ export async function createSolanaVenue(mode: Mode, db: Db, env: NodeJS.ProcessE
   const signer = await createSigner(mode, db, env);
   const roles: Role[] = ["drops", "vault", "cashback", "fee", "feePayer"];
   const addresses = Object.fromEntries(await Promise.all(roles.map(async (name) => [name, (await signer.addressOf(role(name))).toBase58()]))) as Record<Role, string>;
+  // Addresses and how each signs, never the keys. Lets you check the setup in the worker's logs.
+  const how = { privy: "Privy", key: "private key", seed: "dev seed" } as const;
+  console.log(`[venue] treasury wallets on ${mode}: ${roles.map((name) => `${name} ${addresses[name]} (${how[signer.custodyOf?.(name) ?? "privy"]})`).join(", ")}`);
   const endpoints = { ...ccEndpointsFor(mode), ...(env.CC_PAYMENT_WALLET ? { paymentWallet: new PublicKey(env.CC_PAYMENT_WALLET).toBase58() } : {}) };
   return buildSolanaVenue(
     { mode, connection, signer, db, endpoints, ccApiKey: env.CC_API_KEY, jupiterKey: env.JUPITER_API_KEY, tokenMint: env.GEMDEX_TOKEN_MINT ? new PublicKey(env.GEMDEX_TOKEN_MINT) : undefined },

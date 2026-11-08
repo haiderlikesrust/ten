@@ -41,21 +41,36 @@ Set this in Privy under Wallet infrastructure, then Policies. Default is deny.
 
 ## 4. Treasury wallets
 
-| Env var | Wallet | Holds |
-|---|---|---|
-| `PRIVY_WALLET_DROPS` | Drops | A capped float of USDC |
-| `PRIVY_WALLET_VAULT` | Vault | Revealed cards while listed |
-| `PRIVY_WALLET_CASHBACK` | Cashback | The cashback pool |
-| `PRIVY_WALLET_FEE` | Fee | $CARDS, swept every run |
-| `PRIVY_WALLET_FEE_PAYER` | Fee Payer | SOL only |
+Each wallet is either a private key or a Privy server wallet. Set one of the two variables per wallet, and mix them as you like.
 
-Each value is `walletId:address`. Keep long-term funds in a Squads multisig, not in these.
+| Private key | Or Privy wallet | Wallet | Holds |
+|---|---|---|---|
+| `TREASURY_KEY_DROPS` | `PRIVY_WALLET_DROPS` | Drops | A capped float of USDC |
+| `TREASURY_KEY_VAULT` | `PRIVY_WALLET_VAULT` | Vault | Revealed cards while listed |
+| `TREASURY_KEY_CASHBACK` | `PRIVY_WALLET_CASHBACK` | Cashback | The cashback pool |
+| `TREASURY_KEY_FEE` | `PRIVY_WALLET_FEE` | Fee | $CARDS, swept every run |
+| `TREASURY_KEY_FEE_PAYER` | `PRIVY_WALLET_FEE_PAYER` | Fee Payer | SOL only |
+
+- **Private key:** the base58 string a wallet exports (Phantom's "Show private key"), or a `solana-keygen` file's `[1,2,...]` array. Make a new wallet for each role; never reuse your personal one.
+- **Privy wallet:** `walletId:address`, from the Privy dashboard.
+- Only the worker gets these. The gateway and the site never sign.
+- Privy is still required on mainnet either way, because users' trading wallets sign through it.
+- At startup the worker logs each wallet's address and how it signs, never the key. Check that line after every change.
+
+**What a private key gives up.** A Privy wallet only signs what its policy allows (sections 3 and 8). A private key signs anything, so anyone who can read the worker's environment (a Dokploy login, a server breach, a leaked backup) can empty that wallet at once. The worker's own limits still apply: the daily cap, the wallet floor, the kill switch and arming. If you use private keys:
+
+- [ ] Keep only a working float in Drops and Cashback, and sweep the rest to a Squads multisig often.
+- [ ] Give Dokploy access to as few people as possible, with two-factor sign-in.
+- [ ] Back each key up offline. Losing the server without a backup loses the wallet.
+- [ ] If a key may have leaked, turn on the kill switch, move the funds to a new wallet, and replace the variable.
+
+Keep long-term funds in a Squads multisig, not in these.
 
 ## 5. Launch the token
 
 - [ ] Open pump.fun's launch screen and **check that $CARDS is listed as a Custom Pair** before doing anything. The only source I found is a DefiLlama PR. The pairing is permanent.
 - [ ] Note the creator fee range the screen offers. Sources disagree (0.05-1% in pump's FAQ, 0.01-3% elsewhere).
-- [ ] Launch so the creator is the Fee wallet. Confirm first that this can be signed from it. If you want a Squads creator, the worker cannot sweep from it automatically, so you would move $CARDS to the Fee wallet by hand.
+- [ ] Launch so the creator is the Fee wallet. With `TREASURY_KEY_FEE`, import that key into Phantom and launch from pump.fun's site as usual. With a Privy Fee wallet, confirm first that the launch can be signed from it. If you want a Squads creator, the worker cannot sweep from it automatically, so you would move $CARDS to the Fee wallet by hand.
 - [ ] Do not turn on pump.fun fee sharing. It breaks these collect instructions, and the worker halts if it sees it.
 - [ ] Set `GEMDEX_TOKEN_MINT`, and update `tokenTicker` in `brand.ts`.
 
@@ -88,7 +103,7 @@ Tenner runs on Dokploy: see [DOKPLOY.md](DOKPLOY.md).
 |---|---|
 | Web | `NEXT_PUBLIC_GATEWAY_URL`, `NEXT_PUBLIC_PRIVY_APP_ID`, `NEXT_PUBLIC_PRIVY_SIGNER_ID`, `NEXT_PUBLIC_USDC_MINT` |
 | Gateway | Set `WEB_ORIGIN` to your site, so CORS is not open. Holds no signing keys. On devnet and mainnet it needs `SOLANA_RPC_URL` and `GEMDEX_TOKEN_MINT` to read $TENR balances for the access minimum. |
-| Worker | One instance. It alone holds Privy secrets. |
+| Worker | One instance. It alone holds Privy secrets and any `TREASURY_KEY_*`. |
 | Database | Managed Postgres. Backups on. |
 
 ## 8. The $TENR flywheel
@@ -97,7 +112,7 @@ See [FLYWHEEL.md](FLYWHEEL.md).
 
 - [ ] **Legal review of gift draws.** A random prize that needs a token purchase to enter can be a lottery. Get counsel's sign-off, and add a free way to enter if they require one, before draws run with real money. Until then, keep `giftsEnabled` off on mainnet in Admin → Flywheel.
 - [ ] Put the team's wallets in Admin → Flywheel → "Wallets that can never win".
-- [ ] Privy policy for the Drops wallet: allow Jupiter's swap program, and SPL Token `Burn` on the $TENR mint (buyback and burn of Pulse sales).
+- [ ] If Drops is a Privy wallet, its policy must allow Jupiter's swap program and SPL Token `Burn` on the $TENR mint (buyback and burn of Pulse sales). A private-key Drops wallet needs nothing here.
 - [ ] Check the access minimum on devnet with a wallet just under and just over 0.1% of supply.
 
 A public paper demo must set `PAPER_OPEN_ADMIN=false`, or anyone can open Admin.

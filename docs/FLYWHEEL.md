@@ -48,7 +48,7 @@ Pulse sales (half of what winners pay) ──► buyback and burn of $TENR      
   3. Burn every $TENR the Drops wallet holds.
   4. Book the USDC as gone (`buyback_inflight` → `world`) and record the run: USDC in, $TENR bought, swap and burn signatures.
 - **Each step resumes:** stages are PENDING → SWAPPED → DONE, every transaction goes through `sendOnce`. A swap that can't go through in 6 hours returns its money to `revenue` (SKIPPED).
-- **Privy policy:** the Drops wallet needs Jupiter's swap and SPL Token `Burn` on the $TENR mint. On the [launch checklist](LAUNCH.md).
+- **Privy policy:** if Drops is a Privy wallet, it needs Jupiter's swap and SPL Token `Burn` on the $TENR mint. On the [launch checklist](LAUNCH.md).
 - **Price-blind:** it buys on the schedule whatever the price, never more than what has come in.
 - **What this means for Pulse:** sales used to refill the drops pool in full. Now half comes back, so how often cards drop leans more on trading fees. Change the share in Admin → Treasury.
 

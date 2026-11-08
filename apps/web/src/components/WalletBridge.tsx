@@ -27,7 +27,7 @@ function Bridge() {
   const { ready, authenticated, user, login, logout, getAccessToken } = usePrivy();
   const { addSigners } = useSigners();
   const { exportWallet } = useExportWallet();
-  const { wallets } = useWallets();
+  const { ready: walletsReady, wallets } = useWallets();
   const { signAndSendTransaction } = useSignAndSendTransaction();
   const { signTransaction } = useSignTransaction();
   const client = useQueryClient();
@@ -37,6 +37,9 @@ function Bridge() {
   const embedded = (user?.linkedAccounts as unknown as LinkedWallet[] | undefined)?.find(
     (account) => account.type === "wallet" && account.chainType === "solana" && account.walletClientType === "privy",
   );
+  // Privy loads the trading wallet a moment after sign-in. Approving one-click trading before then fails with
+  // "Wallet proxy not initialized", so nothing that signs runs until the wallet is loaded.
+  const walletLoaded = walletsReady && !!embedded?.address && wallets.some((w) => w.address === embedded.address);
 
   /**
    * Trades the Privy sign-in for a Tenner session, first approving one-click trading if needed. It runs by itself
@@ -47,6 +50,11 @@ function Bridge() {
   finish.current = (force = false) => {
     if (!ready || !authenticated || !embedded?.address || syncing.current) return;
     if (!force && getToken()) return;
+    if (!walletLoaded) {
+      // Runs by itself once the wallet loads. Only a press of Connect needs telling.
+      if (force) toast({ tone: "info", title: "Your trading wallet is still loading", detail: "Sign-in finishes by itself in a moment." });
+      return;
+    }
     syncing.current = true;
     void (async () => {
       try {
@@ -98,7 +106,7 @@ function Bridge() {
 
   useEffect(() => {
     finish.current();
-  }, [authenticated, embedded?.address, embedded?.delegated, ready]);
+  }, [authenticated, embedded?.address, embedded?.delegated, ready, walletLoaded]);
 
   // Signed in to Privy, but no trading wallet arrived. Say so instead of waiting forever.
   useEffect(() => {

@@ -86,13 +86,13 @@ export async function assertCluster(connection: Connection, mode: Exclude<Mode, 
   if (actual !== GENESIS[mode]) throw new Error(`RPC is not ${mode}: genesis ${actual}`);
 }
 
-/** Mainnet signing needs two admins to arm it, and the arm expires. */
+/** Mainnet signing needs an admin to arm it, and the arm expires. */
 export async function assertArmed(db: Db, mode: Mode): Promise<void> {
   if (mode !== "mainnet") return;
   const ops = await getSetting(db, "ops");
   if (ops.killSwitch) throw new Error("kill switch is on");
   const until = ops.armedUntil ? new Date(ops.armedUntil).getTime() : 0;
-  if (until <= Date.now() || new Set(ops.armedBy).size < 2) throw new Error("mainnet is not armed");
+  if (until <= Date.now() || ops.armedBy.length === 0) throw new Error("mainnet is not armed");
 }
 
 const toB64 = (bytes: Uint8Array) => Buffer.from(bytes).toString("base64");

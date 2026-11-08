@@ -9,13 +9,10 @@ import { appSettings } from "./schema";
 export interface OpsFlags {
   killSwitch: boolean;
   reconcileHold: boolean;
-  /** Set only by the two-admin arm. Empty means mainnet stays off. */
+  /** Set only when an admin arms mainnet. Empty or expired means mainnet signs nothing. */
   armedUntil: string | null;
+  /** The admin who armed it. */
   armedBy: string[];
-  /** First admin must be joined by a second within minutes, or the request lapses. */
-  armRequestedAt: string | null;
-  /** The admin whose arm request is waiting for a second admin. */
-  armRequestBy: string | null;
 }
 
 export interface Settings {
@@ -31,7 +28,7 @@ const DEFAULTS: Settings = {
   fees: DEFAULT_FEE_SETTINGS,
   cashback: DEFAULT_CASHBACK_SETTINGS,
   flywheel: DEFAULT_FLYWHEEL_SETTINGS,
-  ops: { killSwitch: false, reconcileHold: false, armedUntil: null, armedBy: [], armRequestedAt: null, armRequestBy: null },
+  ops: { killSwitch: false, reconcileHold: false, armedUntil: null, armedBy: [] },
 };
 
 export async function getSetting<K extends keyof Settings>(db: DbOrTx, key: K): Promise<Settings[K]> {

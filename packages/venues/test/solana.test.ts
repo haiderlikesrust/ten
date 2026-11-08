@@ -38,20 +38,18 @@ describe("mainnet stays locked", () => {
     await expect(createSigner("mainnet", t.db, { TREASURY_KEY_DROPS: key } as never)).rejects.toThrow(/mainnet needs Privy/);
   });
 
-  it("needs two different admins, unexpired, and no kill switch", async () => {
+  it("needs an admin's arm, unexpired, and no kill switch", async () => {
     const future = new Date(Date.now() + 3_600_000).toISOString();
     const past = new Date(Date.now() - 1000).toISOString();
     await setSetting(t.db, "ops", { armedBy: [], armedUntil: null, killSwitch: false });
     await expect(assertArmed(t.db, "mainnet")).rejects.toThrow(/not armed/);
-    await setSetting(t.db, "ops", { armedBy: ["a"], armedUntil: future });
+    await setSetting(t.db, "ops", { armedBy: [], armedUntil: future });
     await expect(assertArmed(t.db, "mainnet")).rejects.toThrow(/not armed/);
-    await setSetting(t.db, "ops", { armedBy: ["a", "a"], armedUntil: future });
+    await setSetting(t.db, "ops", { armedBy: ["a"], armedUntil: past });
     await expect(assertArmed(t.db, "mainnet")).rejects.toThrow(/not armed/);
-    await setSetting(t.db, "ops", { armedBy: ["a", "b"], armedUntil: past });
-    await expect(assertArmed(t.db, "mainnet")).rejects.toThrow(/not armed/);
-    await setSetting(t.db, "ops", { armedBy: ["a", "b"], armedUntil: future, killSwitch: true });
+    await setSetting(t.db, "ops", { armedBy: ["a"], armedUntil: future, killSwitch: true });
     await expect(assertArmed(t.db, "mainnet")).rejects.toThrow(/kill switch/);
-    await setSetting(t.db, "ops", { armedBy: ["a", "b"], armedUntil: future, killSwitch: false });
+    await setSetting(t.db, "ops", { armedBy: ["a"], armedUntil: future, killSwitch: false });
     await expect(assertArmed(t.db, "mainnet")).resolves.toBeUndefined();
     await setSetting(t.db, "ops", { armedBy: [], armedUntil: null });
     await expect(assertArmed(t.db, "devnet")).resolves.toBeUndefined();

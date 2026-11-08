@@ -82,7 +82,7 @@ Use a new database and a separate Privy app.
 - [ ] `GEMDEX_MODE=mainnet`, plus `SOLANA_RPC_URL`, `SESSION_SECRET`, `ADMIN_WALLETS`, `JUPITER_API_KEY`, `CC_API_KEY`, `NEXT_PUBLIC_SOLANA_RPC`.
 - [ ] `ALLOW_MAINNET=I_UNDERSTAND_THIS_MOVES_REAL_MONEY`. Nothing starts without it.
 - [ ] Set tight limits in Admin first: daily cap $50, one cheap machine, wallet floor near zero.
-- [ ] Two different admins each POST `/admin/arm` within 15 minutes. The arm lasts 2 hours, then signing stops by itself.
+- [ ] An admin presses **Arm** in Admin (`POST /admin/arm`). The arm lasts 2 hours, then signing stops by itself; **Renew arm** restarts the 2 hours. One admin is enough, so guard every wallet listed in `ADMIN_WALLETS`.
 
 **Canary, in order, watching Admin the whole time:**
 

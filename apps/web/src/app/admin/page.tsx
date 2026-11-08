@@ -20,7 +20,7 @@ interface DropSettings {
 interface Overview {
   mode: string;
   settings: { drops: DropSettings; fees: { cashbackBps: number; minSwapUsd: number; maxSlippageBps: number }; cashback: { dailyCapPerUser: number; maxRateBps: number }; flywheel: FlywheelSettings };
-  ops: { killSwitch: boolean; reconcileHold: boolean; armedUntil: string | null; armedBy: string[]; armRequestedAt: string | null; armRequestBy: string | null };
+  ops: { killSwitch: boolean; reconcileHold: boolean; armedUntil: string | null; armedBy: string[] };
   status: DropsStatus | null;
   accounts: Array<{ account: string; micros: number }>;
   runs: Array<{ id: string; stage: string; usdcOut: number | null; cashback: number | null; drops: number | null; createdAt: string; error: string | null }>;
@@ -128,12 +128,11 @@ export default function AdminPage() {
     mutationFn: (body: { killSwitch?: boolean; reconcileHold?: boolean }) => api("/admin/ops", { body }),
     onSuccess: () => client.invalidateQueries({ queryKey: ["admin"] }),
   });
-  // Mainnet signs nothing until two different admins arm it, and each arm lasts two hours.
+  // Mainnet signs nothing until an admin arms it, and each arm lasts two hours.
   const arm = useMutation({
     mutationFn: (action: "arm" | "disarm") => api<Overview["ops"]>(`/admin/${action}`, { body: {} }),
-    onSuccess: (next, action) => {
-      const armed = !!next.armedUntil && new Date(next.armedUntil).getTime() > Date.now() && new Set(next.armedBy).size >= 2;
-      toast(action === "disarm" ? { tone: "ok", title: "Disarmed", detail: "Nothing signs until two admins arm again" } : armed && next.armRequestBy === null ? { tone: "ok", title: "Armed for 2 hours" } : { tone: "info", title: "Waiting for a second admin", detail: "Another admin has 15 minutes to press Arm" });
+    onSuccess: (_next, action) => {
+      toast(action === "disarm" ? { tone: "ok", title: "Disarmed", detail: "Nothing signs until an admin arms again" } : { tone: "ok", title: "Armed for 2 hours" });
       void client.invalidateQueries({ queryKey: ["admin"] });
     },
     onError: (error) => toast({ tone: "bad", title: (error as Error).message }),
@@ -164,8 +163,7 @@ export default function AdminPage() {
 
   const balance = (name: string) => data.accounts.find((a) => a.account === name)?.micros ?? 0;
   const armedUntil = data.ops.armedUntil ? new Date(data.ops.armedUntil).getTime() : 0;
-  const armed = armedUntil > now && new Set(data.ops.armedBy).size >= 2;
-  const armWaiting = !!data.ops.armRequestBy && !!data.ops.armRequestedAt && now - new Date(data.ops.armRequestedAt).getTime() < 15 * 60_000;
+  const armed = armedUntil > now && data.ops.armedBy.length > 0;
   const status = data.status;
   const next = status?.nextDropAt ? (new Date(status.nextDropAt).getTime() - now) / 1000 : null;
   const input = (key: string, label: string, hint?: string) => (
@@ -184,7 +182,7 @@ export default function AdminPage() {
               <Pill tone={data.mode === "mainnet" ? "bad" : "warn"}><span className="capitalize">{data.mode}</span></Pill>
               {data.mode === "mainnet" ? (
                 <>
-                  <Pill tone={armed ? "good" : "bad"}>{armed ? `Armed until ${new Date(armedUntil).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}` : armWaiting ? "1 of 2 admins armed" : "Not armed"}</Pill>
+                  <Pill tone={armed ? "good" : "bad"}>{armed ? `Armed until ${new Date(armedUntil).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}` : "Not armed"}</Pill>
                   <Button tone="primary" disabled={arm.isPending} onClick={() => arm.mutate("arm")}>{armed ? "Renew arm" : "Arm"}</Button>
                   {armed ? <Button disabled={arm.isPending} onClick={() => arm.mutate("disarm")}>Disarm</Button> : null}
                 </>

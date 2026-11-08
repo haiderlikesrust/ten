@@ -182,35 +182,35 @@ describe("treasury transfers", () => {
 });
 
 describe("arming mainnet", () => {
-  it("needs a second admin, can't be stretched by one, follows ADMIN_WALLETS live, and renewing never cuts it short", async () => {
+  it("one admin arms it for 2 hours, renewing never cuts it short, disarm ends it, and admin follows ADMIN_WALLETS live", async () => {
     const [a, b, c] = [await login("arm_a"), await login("arm_b"), await login("arm_c")];
     const wallet = async (headers: { authorization: string }) => ((await app.inject({ url: "/me", headers })).json() as { connectedWallet: string }).connectedWallet;
     const saved = process.env.ADMIN_WALLETS;
     process.env.ADMIN_WALLETS = [await wallet(a), await wallet(b)].join(",");
-    await setSetting(t.db, "ops", { armedBy: [], armedUntil: null, armRequestedAt: null, armRequestBy: null });
+    await setSetting(t.db, "ops", { armedBy: [], armedUntil: null });
     const main = await buildServer({ database: t, mode: "mainnet" });
-    const press = async (headers: { authorization: string }) => (await main.inject({ method: "POST", url: "/admin/arm", headers, payload: {} }));
+    const post = async (url: string, headers: { authorization: string }) => main.inject({ method: "POST", url, headers, payload: {} });
     type Ops = { armedBy: string[]; armedUntil: string | null };
     try {
       // Paper made c an admin, but on a real chain only ADMIN_WALLETS counts.
-      expect((await press(c)).statusCode).toBe(403);
-      expect(((await press(a)).json() as Ops).armedUntil).toBeNull();
-      expect(((await press(a)).json() as Ops).armedUntil).toBeNull();
-      const armed = (await press(b)).json() as Ops;
-      expect(new Set(armed.armedBy).size).toBe(2);
-      expect(new Date(armed.armedUntil!).getTime()).toBeGreaterThan(Date.now() + 3_500_000);
-      // One admin pressing again neither extends the window nor ends it.
-      expect(((await press(a)).json() as Ops).armedUntil).toBe(armed.armedUntil);
-      // The second admin completes the renewal.
-      const renewed = (await press(b)).json() as Ops;
+      expect((await post("/admin/arm", c)).statusCode).toBe(403);
+      // A single press arms it, for 2 hours.
+      const armed = (await post("/admin/arm", a)).json() as Ops;
+      expect(armed.armedBy).toHaveLength(1);
+      expect(new Date(armed.armedUntil!).getTime()).toBeGreaterThan(Date.now() + 7_100_000);
+      // Renewing restarts the 2 hours and never shortens them.
+      const renewed = (await post("/admin/arm", b)).json() as Ops;
       expect(new Date(renewed.armedUntil!).getTime()).toBeGreaterThanOrEqual(new Date(armed.armedUntil!).getTime());
+      // Disarm ends it at once.
+      const off = (await post("/admin/disarm", a)).json() as Ops;
+      expect(off.armedUntil).toBeNull();
       // Taking b out of ADMIN_WALLETS takes effect on the next request, without b signing in again.
       process.env.ADMIN_WALLETS = await wallet(a);
-      expect((await press(b)).statusCode).toBe(403);
+      expect((await post("/admin/arm", b)).statusCode).toBe(403);
       expect((await main.inject({ url: "/admin/overview", headers: b })).statusCode).toBe(403);
     } finally {
       process.env.ADMIN_WALLETS = saved;
-      await setSetting(t.db, "ops", { armedBy: [], armedUntil: null, armRequestedAt: null, armRequestBy: null });
+      await setSetting(t.db, "ops", { armedBy: [], armedUntil: null });
       await main.close();
     }
   });

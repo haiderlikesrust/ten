@@ -59,4 +59,4 @@ See [docs/DOKPLOY.md](docs/DOKPLOY.md): three Dokploy applications from one Dock
 
 ## Going live
 
-See [docs/LAUNCH.md](docs/LAUNCH.md). Mainnet is locked behind an env flag, a genesis check, and a two-admin arm that expires. [docs/SPIKE.md](docs/SPIKE.md) records what has been proven against real chains and what has not.
+See [docs/LAUNCH.md](docs/LAUNCH.md). Mainnet is locked behind an env flag, a genesis check, and an admin arm that expires after 2 hours. [docs/SPIKE.md](docs/SPIKE.md) records what has been proven against real chains and what has not.

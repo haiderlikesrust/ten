@@ -732,7 +732,7 @@ export async function buildServer(opts: ServerOptions) {
     if (ops.killSwitch) return "Trading is paused right now. Try again soon.";
     if (mode === "mainnet") {
       const until = ops.armedUntil ? new Date(ops.armedUntil).getTime() : 0;
-      if (until <= Date.now() || new Set(ops.armedBy).size < 2) return "Trading is paused right now. Try again soon.";
+      if (until <= Date.now() || ops.armedBy.length === 0) return "Trading is paused right now. Try again soon.";
     }
     return null;
   };
@@ -812,27 +812,17 @@ export async function buildServer(opts: ServerOptions) {
     return rows[0];
   });
 
-  /** Mainnet signing needs two different admins, and the arm expires on its own. */
+  /** One admin arms mainnet signing for 2 hours; it stops by itself after that. Pressing again restarts the 2 hours. */
   app.post("/admin/arm", async (request, reply) => {
     const admin = await requireAdmin(request, reply);
     if (!admin) return;
     if (mode !== "mainnet") return reply.code(400).send({ error: "Arming only applies to mainnet" });
-    return db.transaction(async (tx) => {
-      // Two admins pressing at once must not overwrite each other.
-      await tx.execute(sql`select pg_advisory_xact_lock(7270013)`);
-      const ops = await getSetting(tx, "ops");
-      const waiting = ops.armRequestBy && ops.armRequestedAt && Date.now() - new Date(ops.armRequestedAt).getTime() < 15 * 60_000 ? ops.armRequestBy : null;
-      if (waiting && waiting !== admin.id) {
-        return setSetting(tx, "ops", { armedBy: [waiting, admin.id], armedUntil: new Date(Date.now() + 2 * 3_600_000).toISOString(), armRequestBy: null, armRequestedAt: null });
-      }
-      // The first press, or the same admin again: a request that waits for someone else. The current arm stands.
-      return setSetting(tx, "ops", { armRequestBy: admin.id, armRequestedAt: new Date().toISOString() });
-    });
+    return setSetting(db, "ops", { armedBy: [admin.id], armedUntil: new Date(Date.now() + 2 * 3_600_000).toISOString() });
   });
 
   app.post("/admin/disarm", async (request, reply) => {
     if (!(await requireAdmin(request, reply))) return;
-    return setSetting(db, "ops", { armedBy: [], armedUntil: null, armRequestedAt: null, armRequestBy: null });
+    return setSetting(db, "ops", { armedBy: [], armedUntil: null });
   });
 
   // The $TENR flywheel: its public page and gift claims (docs/FLYWHEEL.md).

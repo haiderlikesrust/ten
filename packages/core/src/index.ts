@@ -6,7 +6,6 @@ export * from "./budget";
 export * from "./fees";
 export * from "./drops";
 export * from "./cards";
-export * from "./rules";
 export * from "./holders";
 export * from "./pricepath";
 export * from "./flywheel";

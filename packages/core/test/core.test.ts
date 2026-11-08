@@ -2,9 +2,9 @@ import { describe, expect, it } from "vitest";
 import {
   DEFAULT_CASHBACK_SETTINGS as CB, DEFAULT_DROP_SETTINGS as S, HIDDEN, REVEALED, TERMINAL,
   assertTransition, canTransition, cashbackAmount, cashbackCapBps, discountPct, expectedBurn,
-  floorToCents, formatUsd, hiddenPrice, holderBalance, intervalSeconds, matchesRule, ofBps,
+  floorToCents, formatUsd, hiddenPrice, holderBalance, intervalSeconds, ofBps,
   parseGradeNumber, parseUsd, pauseReason, pickMachine, recycleCost, splitFees,
-  tierFor, usd, type AutoRule, type MachineEcon,
+  tierFor, usd, type MachineEcon,
 } from "../src/index";
 
 const p25: MachineEcon = { code: "pokemon_25", price: usd(25), buybackPct: 85, ev: usd(27.49), commonFloor: usd(13), open: true, stock: 100 };
@@ -155,26 +155,6 @@ describe("state machines", () => {
     expect(canTransition("hidden", "QUOTED", "LIVE")).toBe(true);
     expect(canTransition("hidden", "PACK_PAYING", "LIVE")).toBe(false);
     expect(canTransition("hidden", "OPENING", "LIVE")).toBe(false);
-  });
-});
-
-describe("auto-buy rules", () => {
-  const rule: AutoRule = { id: "r", enabled: true, name: "x", category: "Pokemon", grader: "PSA", minGrade: 9, maxPrice: usd(200), minDiscountPct: 20, search: "charizard", dailyBudget: usd(500) };
-  const listing = { name: "2016 Charizard PSA 10", category: "Pokemon", grader: "psa", gradeNum: 10, price: usd(150), insuredValue: usd(200) };
-  it("matches only when everything lines up", () => {
-    expect(matchesRule(rule, listing, 0)).toBe(true);
-    expect(matchesRule({ ...rule, enabled: false }, listing, 0)).toBe(false);
-    expect(matchesRule(rule, { ...listing, price: usd(201) }, 0)).toBe(false);
-    expect(matchesRule(rule, { ...listing, gradeNum: 8 }, 0)).toBe(false);
-    expect(matchesRule(rule, { ...listing, gradeNum: null }, 0)).toBe(false);
-    expect(matchesRule(rule, { ...listing, category: "One Piece" }, 0)).toBe(false);
-    expect(matchesRule(rule, { ...listing, name: "Pikachu" }, 0)).toBe(false);
-    expect(matchesRule(rule, { ...listing, price: usd(190) }, 0)).toBe(false);
-    expect(matchesRule(rule, { ...listing, insuredValue: null }, 0)).toBe(false);
-  });
-  it("enforces the rolling budget", () => {
-    expect(matchesRule(rule, listing, usd(400))).toBe(false);
-    expect(matchesRule(rule, listing, usd(350))).toBe(true);
   });
 });
 

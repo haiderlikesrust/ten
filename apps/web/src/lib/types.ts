@@ -175,16 +175,3 @@ export interface ActivityRow {
   ref: string | null;
   at: string;
 }
-
-export interface AutoRuleRow {
-  id: string;
-  name: string;
-  enabled: boolean;
-  category: string | null;
-  grader: string | null;
-  minGrade: number | null;
-  maxPrice: number;
-  minDiscountPct: number;
-  search: string | null;
-  dailyBudget: number;
-}

@@ -22,7 +22,11 @@ const config = {
     minimumCacheTTL: 86400,
   },
   async redirects() {
-    return [{ source: "/flywheel", destination: "/treasury", permanent: true }];
+    return [
+      { source: "/flywheel", destination: "/treasury", permanent: true },
+      // Auto-Buy was removed. Old links land on Pulse, where limit orders live.
+      { source: "/auto", destination: "/", permanent: true },
+    ];
   },
   async headers() {
     return [{

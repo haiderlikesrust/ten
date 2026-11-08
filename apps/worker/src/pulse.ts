@@ -18,7 +18,7 @@ const nowPrice = (d: Drop, at: number): Micros => (d.path?.length && d.opensAt ?
 
 const LIMIT_WAITS = new Set<string>(["cooldown", "active_claim", "price_moved", "drops_paused"]);
 
-/** Auto-buy orders: a user asks to buy if the price falls to their number. */
+/** Limit orders: a user asks to buy if the price falls to their number. */
 async function runLimits(ctx: Ctx, live: Drop[], at: number) {
   if (live.length === 0) return;
   const limits = await ctx.db.select().from(dropLimits).where(and(eq(dropLimits.state, "open"), inArray(dropLimits.dropId, live.map((d) => d.id))));
@@ -32,7 +32,7 @@ async function runLimits(ctx: Ctx, live: Drop[], at: number) {
     if (result.status === "rejected" && LIMIT_WAITS.has(result.reason)) continue;
     const state = result.status === "won" ? "filled" : "failed";
     await ctx.db.update(dropLimits).set({ state }).where(eq(dropLimits.id, limit.id));
-    await emit(ctx.db, `user:${limit.userId}`, { type: "autoBuy", dropId: limit.dropId, state });
+    await emit(ctx.db, `user:${limit.userId}`, { type: "limitOrder", dropId: limit.dropId, state });
   }
 }
 

@@ -202,7 +202,7 @@ export default function TreasuryPage() {
         </section>
         <div className="px-box flex items-center gap-2.5 px-3.5 py-2.5 text-[13px] text-mute">
           <span className="text-gold"><PixelIcon name="star" /></span>
-          <span>Every feature on {BRAND.name} (Pulse, packs, Market, Auto-Buy and gifts) takes at least <b className="text-bone">{r ? shareOfSupply(r.accessBps) : "–"}</b> of {BRAND.tokenTicker}&apos;s supply, checked live every time. Winners have {r?.claimHours ?? 24} hours to claim.</span>
+          <span>Every feature on {BRAND.name} (Pulse, packs, Market, limit orders and gifts) takes at least <b className="text-bone">{r ? shareOfSupply(r.accessBps) : "–"}</b> of {BRAND.tokenTicker}&apos;s supply, checked live every time. Winners have {r?.claimHours ?? 24} hours to claim.</span>
         </div>
 
         <div className="grid gap-2 lg:grid-cols-[minmax(0,1fr)_360px]">

@@ -3,7 +3,7 @@ import rateLimit from "@fastify/rate-limit";
 import websocket from "@fastify/websocket";
 import { BRAND, accessMessage, cashbackCapBps, discountPct, parseGradeNumber, pastPrices, publicDrop, pulseView, tierFor, holderBalance, usd, type Access } from "@gemdex/core";
 import {
-  activity, and, asc, autoFires, autoRules, dropLimits, availableBalance, balanceOf, balances, ccPacks, claims, count, desc, drops, emit, eq, feeRuns, getSetting, gt, gte, holderSnapshots,
+  activity, and, asc, dropLimits, availableBalance, balanceOf, balances, ccPacks, claims, count, desc, drops, emit, eq, feeRuns, getSetting, gt, gte, holderSnapshots,
   holdings, holds, ilike, inArray, listings, loadJson, lte, machines, orders, placeOrder, pricePoints, pulls, reconcileRuns, sales, setSetting, sql, trackedWallets,
   userAccount, users, watchlist, type Database,
 } from "@gemdex/db";
@@ -523,53 +523,6 @@ export async function buildServer(opts: ServerOptions) {
     if (!paper) return reply.code(404).send({ error: "Paper mode is off" });
     await grantPaperFunds(db, paper, userId, usd(100));
     await emit(db, `user:${userId}`, { type: "balance" });
-    return { ok: true };
-  });
-
-  // Auto-buy --------------------------------------------------------------------
-
-  app.get("/auto", async (request, reply) => {
-    const userId = await userIdFrom(request);
-    if (!requireUser(request, reply, userId)) return;
-    return db.select().from(autoRules).where(eq(autoRules.userId, userId)).orderBy(desc(autoRules.createdAt));
-  });
-
-  app.post("/auto", async (request, reply) => {
-    const userId = await userIdFrom(request);
-    if (!requireUser(request, reply, userId)) return;
-    if (!(await gateFeature(reply, userId))) return;
-    const b = request.body as { name: string; category?: string; grader?: string; minGrade?: number; maxPriceUsd: number; minDiscountPct?: number; search?: string; dailyBudgetUsd: number };
-    if (!(b.maxPriceUsd > 0) || !(b.dailyBudgetUsd > 0) || typeof b.name !== "string") return reply.code(400).send({ error: "Set a max price and a daily budget" });
-    const rows = await db.insert(autoRules).values({
-      userId, name: b.name.slice(0, 60), category: b.category || null, grader: b.grader || null, minGrade: b.minGrade ?? null, maxPrice: usd(b.maxPriceUsd),
-      minDiscountPct: b.minDiscountPct ?? 0, search: b.search || null, dailyBudget: usd(b.dailyBudgetUsd),
-    }).returning();
-    return rows[0];
-  });
-
-  app.patch("/auto/:id", async (request, reply) => {
-    const userId = await userIdFrom(request);
-    if (!requireUser(request, reply, userId)) return;
-    const { id } = request.params as { id: string };
-    const { enabled } = request.body as { enabled: boolean };
-    // Switching a rule off always works; switching one on is using the feature.
-    if (enabled && !(await gateFeature(reply, userId))) return;
-    await db.update(autoRules).set({ enabled }).where(and(eq(autoRules.id, id), eq(autoRules.userId, userId)));
-    return { ok: true };
-  });
-
-  app.delete("/auto/:id", async (request, reply) => {
-    const userId = await userIdFrom(request);
-    if (!requireUser(request, reply, userId)) return;
-    const { id } = request.params as { id: string };
-    if (!UUID.test(id)) return reply.code(404).send({ error: "Rule not found" });
-    // A rule that has fired has records pointing at it, and they only mean something to that rule.
-    await db.transaction(async (tx) => {
-      const owned = await tx.select({ id: autoRules.id }).from(autoRules).where(and(eq(autoRules.id, id), eq(autoRules.userId, userId)));
-      if (!owned[0]) return;
-      await tx.delete(autoFires).where(eq(autoFires.ruleId, id));
-      await tx.delete(autoRules).where(eq(autoRules.id, id));
-    });
     return { ok: true };
   });
 

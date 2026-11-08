@@ -38,7 +38,6 @@ const NAV: NavItem[] = [
   { href: "/gacha", label: "Gacha", icon: "pack", phone: true },
   { href: "/portfolio", label: "Portfolio", icon: "slab", phone: true },
   { href: "/tracker", label: "Tracker", icon: "eye" },
-  { href: "/auto", label: "Auto-Buy", icon: "bot" },
   { href: "/rewards", label: "Rewards", icon: "star" },
 ];
 

@@ -3,8 +3,8 @@ import { checkAccess, walletsOf } from "@gemdex/venues/holdings";
 import type { Ctx } from "./ctx";
 
 /**
- * Whether a user holds enough $TENR right now (docs/FLYWHEEL.md). Limit orders and auto-buys ask
- * before they fire. If the chain can't be read, the answer is no, and they try again later.
+ * Whether a user holds enough $TENR right now (docs/FLYWHEEL.md). Pulse limit orders ask before
+ * they fire. If the chain can't be read, the answer is no, and they try again later.
  */
 export async function mayBuy(ctx: Ctx, userId: string): Promise<boolean> {
   if (!ctx.tokens) return true;

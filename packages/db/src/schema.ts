@@ -354,6 +354,10 @@ export const activity = pgTable("activity", {
   at: ts("at").notNull().defaultNow(),
 }, (t) => [index("activity_user_idx").on(t.userId, t.id)]);
 
+/**
+ * Auto-Buy rules and what they bought. The feature was removed on 2026-11-08 and nothing reads or writes these
+ * any more. The tables stay so no one's data is dropped without a decision; a migration can drop them later.
+ */
 export const autoRules = pgTable("auto_rules", {
   id: uuid("id").primaryKey().defaultRandom(),
   userId: uuid("user_id").notNull().references(() => users.id),

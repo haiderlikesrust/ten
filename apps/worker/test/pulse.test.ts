@@ -163,7 +163,7 @@ describe("what the world sees", () => {
   });
 });
 
-describe("auto-buy", () => {
+describe("limit orders", () => {
   it("buys the moment the price reaches the target, once", async () => {
     const card = await liveCard();
     const userId = await makeUser(usd(200));

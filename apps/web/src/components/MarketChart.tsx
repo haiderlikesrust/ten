@@ -274,7 +274,7 @@ export function MarketChart({ card, prices, limit, moveSec, status }: { card: Pu
       let line: ReturnType<typeof candles.createPriceLine> | null = null;
       const setLimit = (price: number | null) => {
         if (line) candles.removePriceLine(line);
-        line = price ? candles.createPriceLine({ price: price / 1e6, color: colors.up, lineStyle: LineStyle.Dotted, lineWidth: 1, axisLabelVisible: true, title: "Auto-buy" }) : null;
+        line = price ? candles.createPriceLine({ price: price / 1e6, color: colors.up, lineStyle: LineStyle.Dotted, lineWidth: 1, axisLabelVisible: true, title: "Limit" }) : null;
       };
 
       chart.subscribeCrosshairMove((param) => setHovered(typeof param.time === "number" ? byTime.get(param.time) ?? null : null));

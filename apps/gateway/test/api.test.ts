@@ -1,7 +1,7 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { randomUUID } from "node:crypto";
 import { usd } from "@gemdex/core";
-import { autoFires, autoRules, drops, eq, holdings, machines, orders, setSetting, users } from "@gemdex/db";
+import { drops, eq, holdings, machines, orders, setSetting, users } from "@gemdex/db";
 import { buildServer } from "../src/server";
 import { createTestDb, type TestDb } from "../../../tools/testdb";
 
@@ -34,7 +34,7 @@ afterAll(async () => {
 describe("access control", () => {
   it("refuses every account route without a session", async () => {
     const routes: Array<[string, string]> = [
-      ["GET", "/me"], ["GET", "/portfolio"], ["GET", "/activity"], ["GET", "/auto"], ["GET", "/tracker"], ["GET", "/watchlist"], ["GET", "/rewards"],
+      ["GET", "/me"], ["GET", "/portfolio"], ["GET", "/activity"], ["GET", "/tracker"], ["GET", "/watchlist"], ["GET", "/rewards"],
       ["POST", "/wallet/faucet"], ["POST", "/orders/buy"], ["POST", "/orders/open"], ["POST", "/orders/holding"], ["POST", `/drops/${randomUUID()}/claim`],
     ];
     for (const [method, url] of routes) {
@@ -116,36 +116,6 @@ describe("input validation", () => {
     expect(me.strikes).toBe(0);
     const bad = await app.inject({ method: "PATCH", url: "/admin/settings/drops", headers, payload: { minPrice: 10, maxPrice: 1, crashLo: 0.5, crashHi: 0.8, ttlSec: 45 } });
     expect(bad.statusCode).toBe(400);
-  });
-});
-
-describe("auto-buy rules", () => {
-  async function ruleFor(headers: { authorization: string }) {
-    const userId = ((await app.inject({ url: "/me", headers })).json() as { id: string }).id;
-    const rows = await t.db.insert(autoRules).values({ userId, name: "Test rule", maxPrice: usd(40), dailyBudget: usd(100) }).returning();
-    return rows[0]!.id;
-  }
-
-  it("can delete a rule that has already fired", async () => {
-    const headers = await login("rule_owner");
-    const id = await ruleFor(headers);
-    await t.db.insert(autoFires).values({ ruleId: id, nft: "n1", price: usd(10) });
-    expect((await app.inject({ method: "DELETE", url: `/auto/${id}`, headers })).statusCode).toBe(200);
-    expect(await t.db.select().from(autoRules).where(eq(autoRules.id, id))).toHaveLength(0);
-    expect(await t.db.select().from(autoFires).where(eq(autoFires.ruleId, id))).toHaveLength(0);
-  });
-
-  it("cannot delete someone else's rule, or its history", async () => {
-    const id = await ruleFor(await login("rule_keeper"));
-    await t.db.insert(autoFires).values({ ruleId: id, nft: "n2", price: usd(10) });
-    await app.inject({ method: "DELETE", url: `/auto/${id}`, headers: await login("rule_thief") });
-    expect(await t.db.select().from(autoRules).where(eq(autoRules.id, id))).toHaveLength(1);
-    expect(await t.db.select().from(autoFires).where(eq(autoFires.ruleId, id))).toHaveLength(1);
-  });
-
-  it("answers a malformed id without a server error", async () => {
-    const res = await app.inject({ method: "DELETE", url: "/auto/not-a-uuid", headers: await login("rule_typo") });
-    expect(res.statusCode).toBe(404);
   });
 });
 

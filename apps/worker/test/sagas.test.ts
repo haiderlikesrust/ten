@@ -2,7 +2,7 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { randomUUID } from "node:crypto";
 import { DEFAULT_DROP_SETTINGS, TERMINAL, usd, type DropState } from "@gemdex/core";
 import {
-  activity, autoFires, autoRules, balanceOf, balances, cashbackAccruals, ccPacks, chainTx, claims, drops, eq, getSetting, holderSnapshots, holdings, holds, inArray, ledgerEntries, machines,
+  activity, balanceOf, balances, cashbackAccruals, ccPacks, chainTx, claims, drops, eq, getSetting, holderSnapshots, holdings, holds, inArray, ledgerEntries, machines,
   orders, placeOrder, poolCards, post, setSetting, sql, userAccount, users,
 } from "@gemdex/db";
 import { CardFrozen, CcRead, createPaperVenue, role, type Fault, type PaperVenue } from "@gemdex/venues";
@@ -533,35 +533,18 @@ describe("user orders", () => {
   });
 });
 
-describe("auto-buy", () => {
-  const listing = (n: number, price: number) => ({ nftAddress: `auto${n}`, itemName: `2020 Charizard ${n}`, category: "Pokemon", gradingCompany: "PSA", grade: "GEM-MT 10", insuredValue: "100", listing: { price, marketplace: "CC", createdAt: new Date().toISOString() } });
+describe("market listings", () => {
+  const listing = (n: number, price: number) => ({ nftAddress: `feed${n}`, itemName: `2020 Charizard ${n}`, category: "Pokemon", gradingCompany: "PSA", grade: "GEM-MT 10", insuredValue: "100", listing: { price, marketplace: "CC", createdAt: new Date().toISOString() } });
 
-  it("buys a matching listing once, and stops at the daily budget", async () => {
+  it("stores new listings and never buys anything by itself", async () => {
     const venue = createPaperVenue(t.db);
     const ctx = makeCtx(venue);
     const userId = await makeUser(venue, usd(500));
-    await t.db.insert(autoRules).values({ userId, name: "cheap zards", maxPrice: usd(60), minDiscountPct: 30, search: "charizard", dailyBudget: usd(100), grader: "PSA", minGrade: 9 });
-    const cc = { marketplace: async () => ({ filterNFtCard: [listing(1, 50), listing(2, 90), listing(3, 55), listing(4, 58)], nextCursor: null }) };
-    const feedCtx = { ...ctx, cc: cc as never };
-
-    await ingestListings(feedCtx);
-    await ingestListings(feedCtx);
-    for (let i = 0; i < 6; i++) {
-      await t.db.update(orders).set({ nextRunAt: new Date(0), leaseUntil: null }).where(eq(orders.userId, userId));
-      await tickOrders(ctx);
-    }
-    const bought = await t.db.select().from(holdings).where(eq(holdings.userId, userId));
-    expect(bought).toHaveLength(1);
-    expect(bought[0]!.nft).toBe("auto1");
-    expect(await balanceOf(t.db, userAccount(userId))).toBe(usd(450));
-
-    // A later listing still fits the budget, and the one after it would break it.
-    const later = { marketplace: async () => ({ filterNFtCard: [listing(5, 45)], nextCursor: null }) };
-    await ingestListings({ ...ctx, cc: later as never });
-    const beyond = { marketplace: async () => ({ filterNFtCard: [listing(6, 45)], nextCursor: null }) };
-    await ingestListings({ ...ctx, cc: beyond as never });
-    const fires = await t.db.select().from(autoFires);
-    expect(fires.map((f) => f.nft).sort()).toEqual(["auto1", "auto5"]);
+    const cc = { marketplace: async () => ({ filterNFtCard: [listing(1, 50), listing(2, 90)], nextCursor: null }) };
+    expect(await ingestListings({ ...ctx, cc: cc as never })).toBe(2);
+    expect(await ingestListings({ ...ctx, cc: cc as never })).toBe(0);
+    expect(await t.db.select().from(orders).where(eq(orders.userId, userId))).toHaveLength(0);
+    expect(await balanceOf(t.db, userAccount(userId))).toBe(usd(500));
   });
 });
 

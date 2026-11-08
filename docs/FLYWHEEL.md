@@ -21,10 +21,10 @@ Pulse sales (half of what winners pay) ──► buyback and burn of $TENR      
 - **Gated actions:**
   - claiming a Pulse drop, including limit orders when they fire
   - opening Gacha packs
-  - Market and Scanner buys, including auto-buy rules when they fire
+  - Market and Scanner buys
   - claiming a gift
 - **Not gated:** browsing everything, the tour, Portfolio, Wallet, selling back, listing, withdrawing. People must always be able to get their money and cards out.
-- **When the check fails:** the action is refused with "Hold 0.1% of $TENR to buy", plus the shortfall and a link to buy. Limit orders and auto-buys wait instead of failing, and fire once the balance is there.
+- **When the check fails:** the action is refused with "Hold 0.1% of $TENR to buy", plus the shortfall and a link to buy. Pulse limit orders wait instead of failing, and fire once the balance is there.
 - **Modes:**
   - **Mainnet:** enforced.
   - **Devnet:** enforced only if `GEMDEX_TOKEN_MINT` is set.
@@ -33,7 +33,7 @@ Pulse sales (half of what winners pay) ──► buyback and burn of $TENR      
   - The rule is `accessFrom` in `packages/core/src/flywheel.ts`.
   - Reads go through a read-only module, `packages/venues/src/holdings.ts`: `getParsedTokenAccountsByOwner` per wallet, and `getTokenSupply` cached for 60 seconds. Paper reads paper balances against a 1B supply.
   - The gateway checks before a Pulse claim, a Market buy, a pack open and a gift claim (`accessRefusal` in `apps/gateway/src/server.ts`).
-  - The worker checks before a limit order or an auto-buy fires (`mayBuy` in `apps/worker/src/access.ts`).
+  - The worker checks before a Pulse limit order fires (`mayBuy` in `apps/worker/src/access.ts`).
   - `/me` reports `access` (held, needed, ok), reusing a reading for up to 10 seconds. Buys always read fresh.
   - If the chain can't be read, the buy is refused with "try again in a moment" rather than let through.
 
@@ -110,7 +110,7 @@ The ledger gains four accounts: `gifts`, `gift_reserved`, `revenue` and `buyback
 
 ## 6. Build order
 
-1. Read supply and balances, plus the access check, wired into Pulse, Gacha, Market and auto-buys. UI: a hint on the Buy buttons when the user is short, and a banner.
+1. Read supply and balances, plus the access check, wired into Pulse, Gacha, Market and limit orders. UI: a hint on the Buy buttons when the user is short, and a banner.
 2. The fee split with the gift pool, and the `flywheel` settings with their Admin editing.
 3. Gift draws: eligibility, streaks, commit and reveal, claim, expiry, and the user notification.
 4. Pulse sales into `revenue`, then the buyback and burn steps (chain ops plus paper versions).

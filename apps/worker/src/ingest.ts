@@ -1,9 +1,7 @@
-import { matchesRule, type AutoRule } from "@gemdex/core";
 import {
-  activeRulesQuery, autoFires, emit, eq, listings, machines, placeOrder, poolCards, pricePoints, pulls, sales, sql,
+  emit, eq, listings, machines, poolCards, pricePoints, pulls, sales, sql,
 } from "./ingest-db";
 import { isUsdcListing, normalizeListing, normalizeMachine, normalizePoolCard, normalizeWinner, type NormalListing } from "@gemdex/venues";
-import { mayBuy } from "./access";
 import type { Ctx } from "./ctx";
 
 export async function ingestMachines(ctx: Ctx): Promise<void> {
@@ -41,7 +39,7 @@ async function upsertListing(ctx: Ctx, l: NormalListing): Promise<boolean> {
   return !!result[0]?.inserted;
 }
 
-/** One page of newest listings. New rows go out live and are checked against auto-buy rules. */
+/** One page of newest listings. New rows go out live. */
 export async function ingestListings(ctx: Ctx, opts: { pages?: number; announce?: boolean } = {}): Promise<number> {
   let cursor: string | undefined;
   let added = 0;
@@ -61,7 +59,6 @@ export async function ingestListings(ctx: Ctx, opts: { pages?: number; announce?
   }
   if (opts.announce !== false) {
     for (const listing of fresh) await emit(ctx.db, "listings", { type: "listing", listing });
-    await evaluateRules(ctx, fresh);
   }
   return added;
 }
@@ -116,26 +113,6 @@ export async function ingestPool(ctx: Ctx, codes: string[]): Promise<void> {
         if (!card) continue;
         await ctx.db.insert(poolCards).values({ ...card, rarity }).onConflictDoNothing();
       }
-    }
-  }
-}
-
-async function evaluateRules(ctx: Ctx, fresh: NormalListing[]): Promise<void> {
-  if (fresh.length === 0) return;
-  const rules = await activeRulesQuery(ctx.db);
-  for (const { rule, spent } of rules) {
-    const asRule: AutoRule = { ...rule, enabled: rule.enabled, minGrade: rule.minGrade };
-    for (const listing of fresh) {
-      if (!matchesRule(asRule, listing, spent)) continue;
-      // Short of the $TENR minimum: this listing passes. The rule keeps watching for the next one.
-      if (!(await mayBuy(ctx, rule.userId))) break;
-      const fired = await ctx.db.insert(autoFires).values({ ruleId: rule.id, nft: listing.nft, price: listing.price }).onConflictDoNothing().returning({ id: autoFires.id });
-      if (fired.length === 0) continue;
-      await ctx.db.transaction((tx) =>
-        placeOrder(tx, { userId: rule.userId, kind: "market_buy", params: { nft: listing.nft, price: listing.price, rule: rule.id }, holdAmount: listing.price, idempotencyKey: `auto:${rule.id}:${listing.nft}` }),
-      );
-      await emit(ctx.db, `user:${rule.userId}`, { type: "autoFire", rule: rule.name, nft: listing.nft, name: listing.name, price: listing.price });
-      break;
     }
   }
 }

@@ -103,12 +103,11 @@ export function useUserEvents() {
         else if (event.kind === "list") toast({ tone: "ok", title: "Listed" });
         else if (event.kind === "send") toast({ tone: "ok", title: "Sent to your wallet" });
       }
-      if (event.type === "autoBuy") {
+      if (event.type === "limitOrder") {
         void client.invalidateQueries({ queryKey: ["pulse-card", event.dropId] });
-        toast(event.state === "filled" ? { tone: "win", title: "Auto-buy hit", detail: "Settling to your wallet" } : { tone: "bad", title: "Auto-buy could not fill" });
+        toast(event.state === "filled" ? { tone: "win", title: "Limit order filled", detail: "Settling to your wallet" } : { tone: "bad", title: "Limit order could not fill" });
       }
       if (event.type === "cashback") toast({ tone: "ok", title: "Cashback paid" });
-      if (event.type === "autoFire") toast({ tone: "info", title: `Auto-buy: ${String(event.rule)}`, detail: String(event.name ?? "") });
     });
   }, [client]);
   return pending;

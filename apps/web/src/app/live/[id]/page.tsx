@@ -34,7 +34,7 @@ function HeaderStat({ label, value, tone }: { label: string; value: string; tone
 const QUICK_DROPS = [10, 25, 50];
 
 /** An order to buy the second the price falls to a number. Teal, like its dotted line on the chart. */
-function AutoBuy({ card, limit, refresh }: { card: PulseCard; limit: CardData["limit"]; refresh: () => void }) {
+function LimitOrder({ card, limit, refresh }: { card: PulseCard; limit: CardData["limit"]; refresh: () => void }) {
   const me = useMe();
   const toast = useUi((s) => s.toast);
   const [value, setValue] = useState("");
@@ -42,7 +42,7 @@ function AutoBuy({ card, limit, refresh }: { card: PulseCard; limit: CardData["l
     mutationFn: () => api(`/pulse/drops/${card.id}/limit`, { body: { maxPrice: Math.round(Number(value) * 1e6) } }),
     onSuccess: () => {
       setValue("");
-      toast({ tone: "ok", title: "Auto-buy set" });
+      toast({ tone: "ok", title: "Limit order set" });
       refresh();
     },
     onError: (error) => toast({ tone: "bad", title: "Could not set that", detail: (error as Error).message }),
@@ -59,13 +59,13 @@ function AutoBuy({ card, limit, refresh }: { card: PulseCard; limit: CardData["l
       <div className="flex items-center gap-3 border-t border-line pt-3">
         <div className="flex min-w-0 flex-1 items-center gap-3 px-cut border border-teal/40 bg-teal/10 px-3 py-2.5" role="status">
           <div className="min-w-0 flex-1">
-            <div className="pixel text-[11px] uppercase leading-none text-teal">Auto-buy armed</div>
+            <div className="pixel text-[11px] uppercase leading-none text-teal">Limit order open</div>
             <div className="mt-1.5 flex flex-wrap items-baseline gap-x-2">
               <span className="num text-[20px] font-bold leading-none">{money(limit.maxPrice)}</span>
               <span className="num text-[12.5px] text-faint">{gap > 0 ? `${gap}% below now` : "buys at the next tick"}</span>
             </div>
           </div>
-          <button type="button" aria-label="Cancel auto-buy" title="Cancel auto-buy" onClick={() => clear.mutate()} className="flex h-8 w-8 shrink-0 items-center justify-center px-cut text-mute hover:bg-bone/[0.07] hover:text-loss"><X size={16} aria-hidden="true" /></button>
+          <button type="button" aria-label="Cancel limit order" title="Cancel limit order" onClick={() => clear.mutate()} className="flex h-8 w-8 shrink-0 items-center justify-center px-cut text-mute hover:bg-bone/[0.07] hover:text-loss"><X size={16} aria-hidden="true" /></button>
         </div>
       </div>
     );
@@ -83,10 +83,10 @@ function AutoBuy({ card, limit, refresh }: { card: PulseCard; limit: CardData["l
       }}
     >
       <div className="flex items-baseline justify-between gap-2">
-        <span className="pixel text-[12px] uppercase leading-none">Auto-buy</span>
+        <span className="pixel text-[12px] uppercase leading-none">Limit order</span>
         <span className="truncate text-[12px] text-faint">Buys the second it falls to your price</span>
       </div>
-      <div className="flex gap-1" role="group" aria-label="Quick auto-buy prices">
+      <div className="flex gap-1" role="group" aria-label="Quick limit prices">
         {picks.map((pick) => (
           <button
             key={pick.pct}
@@ -105,7 +105,7 @@ function AutoBuy({ card, limit, refresh }: { card: PulseCard; limit: CardData["l
           <input
             className={`${inputClass} num pl-6 pr-24`}
             inputMode="decimal"
-            aria-label="Auto-buy price"
+            aria-label="Limit price"
             placeholder="Your price"
             value={value}
             onChange={(e) => setValue(e.target.value.replace(/[^\d.]/g, ""))}
@@ -175,7 +175,7 @@ function BuyPanel({ card, limit, refresh }: { card: PulseCard; limit: CardData["
           </div>
           <div className="hidden lg:block"><BuyAction card={card} /></div>
           <p className="text-center text-[13px] text-faint">First click gets the card at the price that second. It goes straight to your connected wallet.</p>
-          {!moved ? <AutoBuy card={card} limit={limit} refresh={refresh} /> : null}
+          {!moved ? <LimitOrder card={card} limit={limit} refresh={refresh} /> : null}
           {me ? (
             <div className="flex justify-between text-[13px] text-faint">
               <span>Available</span>

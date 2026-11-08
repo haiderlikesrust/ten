@@ -483,21 +483,51 @@ class SolanaChain implements ChainVenue {
   }
 
   /**
+   * Where pump.fun keeps the Fee wallet's creator fees until they are claimed: one vault for the bonding curve
+   * and one for PumpSwap after graduation, each holding $CARDS.
+   */
+  private async creatorVaults() {
+    const creator = await this.address(role("fee"));
+    const mintInfo = await this.config.connection.getAccountInfo(CARDS_MINT);
+    const tokenProgram = mintInfo?.owner ?? TOKEN_PROGRAM_ID;
+    const pda = (seeds: Array<Buffer | Uint8Array>, program: PublicKey) => PublicKey.findProgramAddressSync(seeds as Buffer[], program)[0];
+    const vault = pda([Buffer.from("creator-vault"), creator.toBuffer()], PUMP);
+    const ammVault = pda([Buffer.from("creator_vault"), creator.toBuffer()], PUMP_AMM);
+    return {
+      creator,
+      tokenProgram,
+      pda,
+      creatorAta: getAssociatedTokenAddressSync(CARDS_MINT, creator, true, tokenProgram),
+      vault,
+      vaultAta: getAssociatedTokenAddressSync(CARDS_MINT, vault, true, tokenProgram),
+      ammVault,
+      ammVaultAta: getAssociatedTokenAddressSync(CARDS_MINT, ammVault, true, tokenProgram),
+    };
+  }
+
+  /**
+   * $CARDS earned as creator fees that nobody has claimed yet. Nothing counts before $TENR exists, because the
+   * worker cannot claim without its mint.
+   */
+  async cardsUnclaimed(): Promise<number> {
+    if (!this.config.tokenMint) return 0;
+    const { vaultAta, ammVaultAta } = await this.creatorVaults();
+    // A vault only exists once fees have reached it.
+    const balance = (account: PublicKey) =>
+      this.config.connection.getTokenAccountBalance(account).then((b) => Number(b.value.uiAmount ?? 0), () => 0);
+    const [curve, pool] = await Promise.all([balance(vaultAta), balance(ammVaultAta)]);
+    return curve + pool;
+  }
+
+  /**
    * Both instructions are permissionless. Simulation against the live programs confirms they
    * are recognized, but a real collection stays unproven until the canary. See docs/SPIKE.md.
    */
   private async collectIx(): Promise<TransactionInstruction[]> {
     const mint = this.config.tokenMint;
     if (!mint) throw new Error("GEMDEX_TOKEN_MINT is not set");
-    const creator = await this.address(role("fee"));
     const payer = await this.address(role("feePayer"));
-    const mintInfo = await this.config.connection.getAccountInfo(CARDS_MINT);
-    const tokenProgram = mintInfo?.owner ?? TOKEN_PROGRAM_ID;
-    const creatorAta = getAssociatedTokenAddressSync(CARDS_MINT, creator, true, tokenProgram);
-    const pda = (seeds: Array<Buffer | Uint8Array>, program: PublicKey) => PublicKey.findProgramAddressSync(seeds as Buffer[], program)[0];
-
-    const [vault] = [pda([Buffer.from("creator-vault"), creator.toBuffer()], PUMP)];
-    const vaultAta = getAssociatedTokenAddressSync(CARDS_MINT, vault, true, tokenProgram);
+    const { creator, tokenProgram, pda, creatorAta, vault, vaultAta, ammVault, ammVaultAta } = await this.creatorVaults();
     const curve: TransactionInstruction = new TransactionInstruction({
       programId: PUMP,
       data: Buffer.from(anchorIx("collect_creator_fee_v2")),
@@ -515,8 +545,6 @@ class SolanaChain implements ChainVenue {
       ],
     });
 
-    const ammVault = pda([Buffer.from("creator_vault"), creator.toBuffer()], PUMP_AMM);
-    const ammVaultAta = getAssociatedTokenAddressSync(CARDS_MINT, ammVault, true, tokenProgram);
     const amm = new TransactionInstruction({
       programId: PUMP_AMM,
       data: Buffer.from(anchorIx("collect_coin_creator_fee")),
@@ -897,6 +925,10 @@ class SolanaFees implements FeeVenue {
 
   cardsBalance() {
     return this.chain.cardsBalance();
+  }
+
+  cardsUnclaimed() {
+    return this.chain.cardsUnclaimed();
   }
 
   async cardsValue(cards: number): Promise<Micros> {

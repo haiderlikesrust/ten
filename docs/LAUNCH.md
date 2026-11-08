@@ -72,6 +72,7 @@ Keep long-term funds in a Squads multisig, not in these.
 - [ ] Note the creator fee range the screen offers. Sources disagree (0.05-1% in pump's FAQ, 0.01-3% elsewhere).
 - [ ] Launch so the creator is the Fee wallet. With `TREASURY_KEY_FEE`, import that key into Phantom and launch from pump.fun's site as usual. With a Privy Fee wallet, confirm first that the launch can be signed from it. If you want a Squads creator, the worker cannot sweep from it automatically, so you would move $CARDS to the Fee wallet by hand.
 - [ ] Do not turn on pump.fun fee sharing. It breaks these collect instructions, and the worker halts if it sees it.
+- You don't need to claim creator fees on pump.fun. Once fees waiting there plus any $CARDS already in the Fee wallet are worth the minimum swap ($25 by default), the worker claims them, swaps them to USDC and splits them. Claiming by hand is harmless; the worker picks up whatever reached the wallet.
 - [ ] Set `GEMDEX_TOKEN_MINT`, and update `tokenTicker` in `brand.ts`.
 
 ## 6. First mainnet run

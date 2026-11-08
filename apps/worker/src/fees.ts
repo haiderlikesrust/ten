@@ -10,7 +10,7 @@ async function advance(ctx: Ctx, run: Run, stage: FeeStage, patch: Partial<typeo
 }
 
 /**
- * Creator fees: collect $CARDS, swap to USDC, split 30/70.
+ * Creator fees: claim $CARDS, swap to USDC, split between cashback, drops and the gift pool.
  * Every stage resumes from saved state. Anyone can trigger collection on-chain,
  * so the input is the actual $CARDS balance, not what our own transaction collected.
  */
@@ -20,8 +20,10 @@ export async function tickFees(ctx: Ctx): Promise<void> {
   let run = open[0];
 
   if (!run) {
-    const cards = await ctx.venue.fees.cardsBalance();
-    if ((await ctx.venue.fees.cardsValue(cards)) < settings.minSwapUsd) return;
+    // pump.fun keeps creator fees in its vaults until they are claimed, so what is waiting there counts as much
+    // as $CARDS someone already claimed into the Fee wallet. Counting only the wallet would wait forever.
+    const [held, unclaimed] = await Promise.all([ctx.venue.fees.cardsBalance(), ctx.venue.fees.cardsUnclaimed()]);
+    if ((await ctx.venue.fees.cardsValue(held + unclaimed)) < settings.minSwapUsd) return;
     const created = await ctx.db.insert(feeRuns).values({ stage: "PENDING" }).returning();
     run = created[0]!;
   }

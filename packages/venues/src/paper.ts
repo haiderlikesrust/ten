@@ -41,6 +41,8 @@ export function accountOf(party: Party): string {
 }
 
 const CARDS_ACCOUNT = "fee_cards";
+/** Stands in for pump.fun's creator vaults: fees wait here until a claim moves them to the Fee wallet, as on mainnet. */
+const UNCLAIMED_CARDS = "fee_cards_unclaimed";
 const tokenAccount = (wallet: string) => `token:${wallet}`;
 /** Paper $TENR price: $100k market cap on 1 billion supply. */
 const PAPER_TENR_PRICE_USD = 0.0001;
@@ -150,7 +152,13 @@ class PaperChainVenue implements ChainVenue {
       case "burnTenr":
         await tx.update(paperChain).set({ micros: 0 }).where(eq(paperChain.account, tokenAccount(addressOf(op.owner))));
         return true;
-      case "feeCollect":
+      case "feeCollect": {
+        // Claims everything waiting. A second claim finds nothing, so a repeated send cannot count fees twice.
+        const rows = await tx.select({ micros: paperChain.micros }).from(paperChain).where(eq(paperChain.account, UNCLAIMED_CARDS));
+        const waiting = rows[0]?.micros ?? 0;
+        if (waiting > 0 && (await debit(tx, UNCLAIMED_CARDS, waiting))) await credit(tx, CARDS_ACCOUNT, waiting);
+        return true;
+      }
       case "core":
       case "ccList":
         return true;
@@ -328,6 +336,11 @@ class PaperFeeVenue implements FeeVenue {
     return (rows[0]?.micros ?? 0) / 1e6;
   }
 
+  async cardsUnclaimed(): Promise<number> {
+    const rows = await this.db.select({ micros: paperChain.micros }).from(paperChain).where(eq(paperChain.account, UNCLAIMED_CARDS));
+    return (rows[0]?.micros ?? 0) / 1e6;
+  }
+
   async cardsValue(cards: number): Promise<Micros> {
     return usd(cards * this.priceUsd);
   }
@@ -360,7 +373,8 @@ export interface PaperVenue extends Venue {
   mode: "paper";
   /** Test money for a paper wallet. Only exists in paper mode. */
   faucet(account: string, amount: Micros): Promise<void>;
-  accrueCards(cards: number): Promise<void>;
+  /** Creator fees earned. They wait unclaimed, as on mainnet, unless `claimed` says someone already claimed them by hand. */
+  accrueCards(cards: number, where?: "unclaimed" | "claimed"): Promise<void>;
   setTokenBalance(wallet: string, tokens: number): Promise<void>;
   /** Moves paper chain funds behind the book, like a user draining their exported key. */
   drain(account: string, amount: Micros): Promise<void>;
@@ -380,7 +394,7 @@ export function createPaperVenue(db: Db, options: PaperOptions = {}): PaperVenue
     fees: new PaperFeeVenue(db, opts.cardsPriceUsd),
     address: (name) => ROLE_ADDRESS[name],
     faucet: (account, amount) => addRow(account, amount),
-    accrueCards: (cards) => addRow(CARDS_ACCOUNT, Math.round(cards * 1e6)),
+    accrueCards: (cards, where = "unclaimed") => addRow(where === "claimed" ? CARDS_ACCOUNT : UNCLAIMED_CARDS, Math.round(cards * 1e6)),
     setTokenBalance: async (wallet, tokens) => {
       await db
         .insert(paperChain)

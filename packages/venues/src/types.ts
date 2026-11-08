@@ -117,6 +117,8 @@ export interface MarketVenue {
 export interface FeeVenue {
   /** $CARDS sitting in the Fee wallet, whoever triggered collection. */
   cardsBalance(): Promise<number>;
+  /** $CARDS earned as creator fees but still waiting in pump.fun's vaults for someone to claim. */
+  cardsUnclaimed(): Promise<number>;
   cardsValue(cards: number): Promise<Micros>;
   /** Fails loudly if a pump.fun fee sharing config exists, because it breaks collection. */
   assertNoSharingConfig(): Promise<void>;

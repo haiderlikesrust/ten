@@ -601,6 +601,9 @@ describe("fee pipeline", () => {
     const venue = createPaperVenue(t.db, { cardsPriceUsd: 0.2 });
     const ctx = makeCtx(venue);
     await venue.accrueCards(5000);
+    // As on mainnet, the fees wait in pump.fun's vaults and nothing has reached the Fee wallet. The worker must claim them itself.
+    expect(await venue.fees.cardsUnclaimed()).toBe(5000);
+    expect(await venue.fees.cardsBalance()).toBe(0);
     const before = { cashback: await balanceOf(t.db, "cashback"), drops: await balanceOf(t.db, "drops"), gifts: await balanceOf(t.db, "gifts") };
     await tickFees(ctx);
     await tickFees(ctx);
@@ -609,7 +612,43 @@ describe("fee pipeline", () => {
     expect(await balanceOf(t.db, "gifts")).toBe(before.gifts + usd(200));
     expect(await balanceOf(t.db, "drops")).toBe(before.drops + usd(500));
     expect(await venue.fees.cardsBalance()).toBe(0);
+    expect(await venue.fees.cardsUnclaimed()).toBe(0);
     await assertBooksBalance(venue);
+  });
+
+  it("still swaps fees someone already claimed into the Fee wallet by hand", async () => {
+    const venue = createPaperVenue(t.db, { cardsPriceUsd: 0.2 });
+    const ctx = makeCtx(venue);
+    await venue.accrueCards(1000, "claimed");
+    expect(await venue.fees.cardsUnclaimed()).toBe(0);
+    const before = { cashback: await balanceOf(t.db, "cashback"), drops: await balanceOf(t.db, "drops"), gifts: await balanceOf(t.db, "gifts") };
+    for (let i = 0; i < 3; i++) await tickFees(ctx);
+    expect(await balanceOf(t.db, "cashback")).toBe(before.cashback + usd(60));
+    expect(await balanceOf(t.db, "gifts")).toBe(before.gifts + usd(40));
+    expect(await balanceOf(t.db, "drops")).toBe(before.drops + usd(100));
+    expect(await venue.fees.cardsBalance()).toBe(0);
+  });
+
+  it("adds up fees in the wallet and fees still unclaimed toward the minimum swap", async () => {
+    const venue = createPaperVenue(t.db, { cardsPriceUsd: 0.2 });
+    const ctx = makeCtx(venue);
+    const { minSwapUsd } = await getSetting(t.db, "fees");
+    // Each half alone is under the minimum; together they reach it.
+    const half = minSwapUsd / 1e6 / 0.2 / 2 + 1;
+    const runs = async () => (await t.sql`select count(*)::int as n from fee_runs`)[0]!.n as number;
+    const runsBefore = await runs();
+    await venue.accrueCards(half, "claimed");
+    await tickFees(ctx);
+    expect(await runs()).toBe(runsBefore);
+    await venue.accrueCards(half);
+    const before = await balanceOf(t.db, "fee");
+    const beforeSplit = { cashback: await balanceOf(t.db, "cashback"), drops: await balanceOf(t.db, "drops"), gifts: await balanceOf(t.db, "gifts") };
+    for (let i = 0; i < 3; i++) await tickFees(ctx);
+    const total = usd(half * 2 * 0.2);
+    expect((await balanceOf(t.db, "cashback")) + (await balanceOf(t.db, "drops")) + (await balanceOf(t.db, "gifts")) - (beforeSplit.cashback + beforeSplit.drops + beforeSplit.gifts)).toBe(total);
+    expect(await balanceOf(t.db, "fee")).toBe(before);
+    expect(await venue.fees.cardsBalance()).toBe(0);
+    expect(await venue.fees.cardsUnclaimed()).toBe(0);
   });
 
   it("resumes after failures without double-counting", async () => {

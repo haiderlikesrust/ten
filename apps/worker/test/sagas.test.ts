@@ -68,11 +68,17 @@ async function assertBooksBalance(venue: PaperVenue) {
   const total = await t.db.select({ sum: sql<string>`coalesce(sum(${ledgerEntries.delta}), 0)` }).from(ledgerEntries);
   expect(Number(total[0]!.sum)).toBe(0);
   const rows = await t.db.select().from(balances);
-  const gaps: string[] = [];
+  // Book accounts that share a wallet are compared together: the gift pool sits in the Drops wallet.
+  const books = new Map<string, number>();
   for (const row of rows) {
     if (row.account === "cc" || row.account === "world") continue;
-    const chain = await venue.chainBalance(row.account);
-    if (chain !== row.micros) gaps.push(`${row.account}: book ${row.micros} chain ${chain}`);
+    const wallet = row.account === "gifts" || row.account === "gift_reserved" ? "drops" : row.account;
+    books.set(wallet, (books.get(wallet) ?? 0) + row.micros);
+  }
+  const gaps: string[] = [];
+  for (const [account, micros] of books) {
+    const chain = await venue.chainBalance(account);
+    if (chain !== micros) gaps.push(`${account}: book ${micros} chain ${chain}`);
   }
   expect(gaps).toEqual([]);
 }
@@ -101,7 +107,10 @@ beforeEach(async () => {
   await t.db.update(drops).set({ state: "VOID" }).where(sql`${drops.state} not in ('SETTLED','DELIVERED','BOUGHT_BACK','SKIPPED','ABANDONED','REFUNDED','VOID')`);
   // Some tests move money behind the book on purpose. Each test starts with the two in step.
   await t.sql`delete from paper_chain where account not like 'token:%' and account <> 'fee_cards'`;
-  await t.sql`insert into paper_chain (account, micros) select account, micros from balances where account not in ('cc', 'world')`;
+  // The gift pool and gifts waiting to be claimed live in the Drops wallet, beside the drops money (docs/FLYWHEEL.md).
+  await t.sql`insert into paper_chain (account, micros)
+    select case when account in ('gifts', 'gift_reserved') then 'drops' else account end, sum(micros)
+    from balances where account not in ('cc', 'world') group by 1`;
   await t.sql`update holds set status = 'released' where status = 'active'`;
   await t.sql`update claims set state = 'voided' where state = 'won'`;
   await t.sql`delete from app_settings where key = 'reconcileLast'`;
@@ -419,7 +428,11 @@ describe("chaos", () => {
     }
 
     const final = await t.db.select().from(drops).where(inArray(drops.id, ids));
-    const stuck = final.filter((d) => !TERMINAL.includes(d.state as DropState) && !(d.kind === "hidden" && d.state === "EXPIRED"));
+    // Three failed sell-back offers in a row park the card for a person on purpose. It must be rare, and book nothing.
+    const parked = final.filter((d) => d.kind === "revealed" && d.state === "EXPIRED" && (d.lastError ?? "").startsWith("needs review: sell-back stopped"));
+    expect(parked.length).toBeLessThanOrEqual(2);
+    for (const d of parked) expect(await t.db.select().from(ledgerEntries).where(eq(ledgerEntries.ref, `buyback:${d.id}`))).toEqual([]);
+    const stuck = final.filter((d) => !TERMINAL.includes(d.state as DropState) && !(d.kind === "hidden" && d.state === "EXPIRED") && !parked.includes(d));
     expect(stuck.map((d) => `${d.kind}:${d.state}:${d.lastError}`)).toEqual([]);
 
     const wins = final.filter((d) => d.state === "SETTLED" || d.state === "DELIVERED");
@@ -578,16 +591,17 @@ describe("deposit sync", () => {
 });
 
 describe("fee pipeline", () => {
-  it("splits exactly 30/70 and a crash cannot pay it twice", async () => {
+  it("splits exactly 30/20/50 between cashback, the gift pool and drops, and a crash cannot pay it twice", async () => {
     const venue = createPaperVenue(t.db, { cardsPriceUsd: 0.2 });
     const ctx = makeCtx(venue);
     await venue.accrueCards(5000);
-    const before = { cashback: await balanceOf(t.db, "cashback"), drops: await balanceOf(t.db, "drops") };
+    const before = { cashback: await balanceOf(t.db, "cashback"), drops: await balanceOf(t.db, "drops"), gifts: await balanceOf(t.db, "gifts") };
     await tickFees(ctx);
     await tickFees(ctx);
     await tickFees(ctx);
     expect(await balanceOf(t.db, "cashback")).toBe(before.cashback + usd(300));
-    expect(await balanceOf(t.db, "drops")).toBe(before.drops + usd(700));
+    expect(await balanceOf(t.db, "gifts")).toBe(before.gifts + usd(200));
+    expect(await balanceOf(t.db, "drops")).toBe(before.drops + usd(500));
     expect(await venue.fees.cardsBalance()).toBe(0);
     await assertBooksBalance(venue);
   });
@@ -596,13 +610,14 @@ describe("fee pipeline", () => {
     const venue = createPaperVenue(t.db, { cardsPriceUsd: 0.2, faults: { send_ambiguous: 0.5, send_lost: 0.3 }, rng: rng(21), txTtlMs: 20 });
     const ctx = makeCtx(venue);
     await venue.accrueCards(1000);
-    const before = { cashback: await balanceOf(t.db, "cashback"), drops: await balanceOf(t.db, "drops") };
+    const before = { cashback: await balanceOf(t.db, "cashback"), drops: await balanceOf(t.db, "drops"), gifts: await balanceOf(t.db, "gifts") };
     for (let i = 0; i < 60; i++) {
       await tickFees(ctx);
       await new Promise((resolve) => setTimeout(resolve, 5));
     }
     expect(await balanceOf(t.db, "cashback")).toBe(before.cashback + usd(60));
-    expect(await balanceOf(t.db, "drops")).toBe(before.drops + usd(140));
+    expect(await balanceOf(t.db, "gifts")).toBe(before.gifts + usd(40));
+    expect(await balanceOf(t.db, "drops")).toBe(before.drops + usd(100));
   });
 
   it("skips amounts too small to be worth swapping", async () => {

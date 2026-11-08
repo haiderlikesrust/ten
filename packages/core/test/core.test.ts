@@ -125,7 +125,10 @@ describe("fee split", () => {
       expect(cashback + drops).toBe(received);
       expect(cashback).toBe(Math.floor((received * 3000) / 10_000));
     }
-    expect(splitFees(usd(100), 3000)).toEqual({ cashback: usd(30), drops: usd(70) });
+    expect(splitFees(usd(100), 3000)).toEqual({ cashback: usd(30), gifts: 0, drops: usd(70) });
+    expect(splitFees(usd(100), 3000, 2000)).toEqual({ cashback: usd(30), gifts: usd(20), drops: usd(50) });
+    // Shares that add past 100% can never pay out more than came in.
+    expect(splitFees(usd(100), 9000, 2000)).toEqual({ cashback: usd(90), gifts: usd(10), drops: 0 });
   });
 });
 
@@ -185,5 +188,73 @@ describe("misc", () => {
   it("computes discount", () => {
     expect(discountPct(usd(100), usd(1000))).toBe(90);
     expect(discountPct(usd(1), 0)).toBe(0);
+  });
+});
+
+describe("$TENR access minimum", () => {
+  it("needs the share of supply in basis points", async () => {
+    const { accessFrom, shareOfSupply, accessMessage } = await import("../src/flywheel");
+    expect(accessFrom(1_000_000, 1_000_000_000, 10)).toMatchObject({ enforced: true, ok: true, needed: 1_000_000 });
+    expect(accessFrom(999_999.99, 1_000_000_000, 10).ok).toBe(false);
+    // Burns shrink supply, so the same bag clears a higher bar.
+    expect(accessFrom(950_000, 950_000_000, 10).ok).toBe(true);
+    expect(accessFrom(0, 1_000_000_000, 0)).toMatchObject({ enforced: false, ok: true });
+    expect(accessFrom(0, 0, 10)).toMatchObject({ enforced: false, ok: true });
+    expect(shareOfSupply(10)).toBe("0.1%");
+    expect(shareOfSupply(200)).toBe("2%");
+    expect(accessMessage({ bps: 10 })).toBe("Hold 0.1% of $TENR to buy");
+  });
+});
+
+describe("gift draws", () => {
+  it("sizes the prize from the pool and rolls over when even the smallest pack doesn't fit", async () => {
+    const { giftPrize } = await import("../src/gifts");
+    const tiers = [usd(500), usd(250), usd(100), usd(50)];
+    expect(giftPrize(usd(12_000), 833, tiers)).toBe(usd(500));
+    expect(giftPrize(usd(3_100), 833, tiers)).toBe(usd(250));
+    expect(giftPrize(usd(1_300), 833, tiers)).toBe(usd(100));
+    expect(giftPrize(usd(650), 833, tiers)).toBe(usd(50));
+    expect(giftPrize(usd(500), 833, tiers)).toBeNull();
+    expect(giftPrize(0, 833, tiers)).toBeNull();
+  });
+
+  it("takes turns between the three groups, slot by slot", async () => {
+    const { giftGroupOrder, giftSlot } = await import("../src/gifts");
+    const slot = giftSlot(Date.UTC(2026, 10, 7, 12, 17), 30);
+    expect(new Date(slot).toISOString()).toBe("2026-11-07T12:00:00.000Z");
+    const first = giftGroupOrder(slot, 30)[0];
+    const next = giftGroupOrder(slot + 30 * 60_000, 30)[0];
+    const third = giftGroupOrder(slot + 60 * 60_000, 30)[0];
+    expect(new Set([first, next, third]).size).toBe(3);
+    expect(giftGroupOrder(slot + 90 * 60_000, 30)[0]).toBe(first);
+  });
+
+  it("weights holders by days held and blasters by spend", async () => {
+    const { holderWeight, blasterWeight } = await import("../src/gifts");
+    const now = Date.UTC(2026, 10, 7);
+    expect(holderWeight(now - 3_600_000, now)).toBe(1);
+    expect(holderWeight(now - 3 * 86_400_000 - 1, now)).toBe(4);
+    expect(blasterWeight(usd(4))).toBe(1);
+    expect(blasterWeight(usd(255))).toBe(25);
+  });
+
+  it("picks the same winner from the same entries and seed, whatever order they come in", async () => {
+    const { pickGiftWinner, giftEntriesText } = await import("../src/gifts");
+    const entries = [
+      { userId: "b", wallet: "WalletB", weight: 3 },
+      { userId: "a", wallet: "WalletA", weight: 1 },
+      { userId: "c", wallet: "WalletC", weight: 6 },
+    ];
+    expect(giftEntriesText(entries)).toBe("a:WalletA:1\nb:WalletB:3\nc:WalletC:6");
+    // Total weight 10, in published order a(0) b(1-3) c(4-9).
+    expect(pickGiftWinner(entries, "0")?.userId).toBe("a");
+    expect(pickGiftWinner(entries, "3")?.userId).toBe("b");
+    expect(pickGiftWinner(entries, "e")?.userId).toBe("c"); // 14 % 10 = 4
+    expect(pickGiftWinner([...entries].reverse(), "e")?.userId).toBe("c");
+    expect(pickGiftWinner([], "e")).toBeNull();
+    // Every entry wins in proportion to its weight.
+    const wins: Record<string, number> = { a: 0, b: 0, c: 0 };
+    for (let i = 0; i < 1000; i++) wins[pickGiftWinner(entries, i.toString(16))!.userId]!++;
+    expect(wins).toEqual({ a: 100, b: 300, c: 600 });
   });
 });

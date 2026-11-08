@@ -82,12 +82,24 @@ Stop at the first thing that looks wrong. The kill switch is at the top of Admin
 
 ## 7. Deploy
 
-| Piece | Where | Notes |
-|---|---|---|
-| Web | Vercel | `NEXT_PUBLIC_GATEWAY_URL`, `NEXT_PUBLIC_PRIVY_APP_ID`, `NEXT_PUBLIC_PRIVY_SIGNER_ID`, `NEXT_PUBLIC_USDC_MINT` |
-| Gateway | Fly.io | Set `WEB_ORIGIN` to your site, so CORS is not open. Holds no signing keys. |
-| Worker | Fly.io | One instance is fine. It alone holds Privy secrets. |
-| Database | Managed Postgres, same region | Backups on. |
+Tenner runs on Dokploy: see [DOKPLOY.md](DOKPLOY.md).
+
+| Piece | Notes |
+|---|---|
+| Web | `NEXT_PUBLIC_GATEWAY_URL`, `NEXT_PUBLIC_PRIVY_APP_ID`, `NEXT_PUBLIC_PRIVY_SIGNER_ID`, `NEXT_PUBLIC_USDC_MINT` |
+| Gateway | Set `WEB_ORIGIN` to your site, so CORS is not open. Holds no signing keys. On devnet and mainnet it needs `SOLANA_RPC_URL` and `GEMDEX_TOKEN_MINT` to read $TENR balances for the access minimum. |
+| Worker | One instance. It alone holds Privy secrets. |
+| Database | Managed Postgres. Backups on. |
+
+## 8. The $TENR flywheel
+
+See [FLYWHEEL.md](FLYWHEEL.md).
+
+- [ ] **Legal review of gift draws.** A random prize that needs a token purchase to enter can be a lottery. Get counsel's sign-off, and add a free way to enter if they require one, before draws run with real money. Until then, keep `giftsEnabled` off on mainnet in Admin → Flywheel.
+- [ ] Put the team's wallets in Admin → Flywheel → "Wallets that can never win".
+- [ ] Privy policy for the Fee wallet: allow SPL Token `Burn` on the $TENR mint (buyback and burn).
+- [ ] Privy policy for trading wallets: allow USDC `TransferChecked` to the Fee wallet's USDC account, up to the platform fee on your highest pack price (the platform fee).
+- [ ] Check the access minimum on devnet with a wallet just under and just over 0.1% of supply.
 
 A public paper demo must set `PAPER_OPEN_ADMIN=false`, or anyone can open Admin.
 

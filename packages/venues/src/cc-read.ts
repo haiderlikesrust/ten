@@ -1,3 +1,5 @@
+import type { Mode } from "./types";
+
 /**
  * Read-only Collector Crypt client. GET only, by construction: there is no method
  * here that can move money, so market data can safely point at mainnet in every mode.
@@ -6,19 +8,27 @@ export interface CcEndpoints {
   gachaBase: string;
   apiBase: string;
   metaBase: string;
+  /** The wallet CC's pack payments go to. A pack paying anywhere else is refused. */
+  paymentWallet?: string;
 }
 
 export const CC_MAINNET: CcEndpoints = {
   gachaBase: "https://gacha.collectorcrypt.com",
   apiBase: "https://api.collectorcrypt.com",
   metaBase: "https://nft.collectorcrypt.com",
+  // The one lev pays in production (its COLLECTOR_CRYPT_PAYMENT_WALLET).
+  paymentWallet: "GachaNgyXTU3zFogQ8Z5jR2BLXs8215X2AtEH18VxJq3",
 };
 
+/** Devnet's payment wallet is not known yet. Set CC_PAYMENT_WALLET once a devnet pack shows it. */
 export const CC_DEVNET: CcEndpoints = {
   gachaBase: "https://dev-gacha.collectorcrypt.com",
   apiBase: "https://dev-api.collectorcrypt.com",
   metaBase: "https://nft.collectorcrypt.com",
 };
+
+/** Devnet talks to CC's devnet. Paper and mainnet read the real market. */
+export const ccEndpointsFor = (mode: Mode): CcEndpoints => (mode === "devnet" ? CC_DEVNET : CC_MAINNET);
 
 export interface CcMachine {
   code: string;
@@ -117,8 +127,12 @@ export interface CcCardMarket {
 
 export interface CcReadOptions {
   endpoints?: CcEndpoints;
+  /** Picks the mode's endpoints when `endpoints` is not given. */
+  mode?: Mode;
   apiKey?: string;
   timeoutMs?: number;
+  /** Only tests inject this. */
+  fetchImpl?: typeof fetch;
 }
 
 export class CcHttpError extends Error {
@@ -133,11 +147,13 @@ export class CcRead {
   readonly endpoints: CcEndpoints;
   private readonly apiKey?: string;
   private readonly timeoutMs: number;
+  private readonly fetcher: typeof fetch;
 
   constructor(opts: CcReadOptions = {}) {
-    this.endpoints = opts.endpoints ?? CC_MAINNET;
+    this.endpoints = opts.endpoints ?? (opts.mode ? ccEndpointsFor(opts.mode) : CC_MAINNET);
     this.apiKey = opts.apiKey;
     this.timeoutMs = opts.timeoutMs ?? 15_000;
+    this.fetcher = opts.fetchImpl ?? ((input, init) => fetch(input, init));
   }
 
   private async get<T>(url: string, attempt = 0): Promise<T> {
@@ -146,7 +162,7 @@ export class CcRead {
       if (url.startsWith(this.endpoints.apiBase)) headers.Authorization = `Bearer ${this.apiKey}`;
       else headers["x-api-key"] = this.apiKey;
     }
-    const res = await fetch(url, { headers, redirect: "follow", signal: AbortSignal.timeout(this.timeoutMs) });
+    const res = await this.fetcher(url, { headers, redirect: "follow", signal: AbortSignal.timeout(this.timeoutMs) });
     if ((res.status === 429 || res.status === 503) && attempt < 3) {
       const body = (await res.json().catch(() => ({}))) as { retryAfter?: number };
       await sleep(Math.min(30, body.retryAfter ?? 2 ** attempt) * 1000);

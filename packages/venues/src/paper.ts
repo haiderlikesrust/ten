@@ -3,7 +3,7 @@ import { parseUsd, usd, type Micros, type Rarity } from "@gemdex/core";
 import { and, ccPacks, eq, isNull, machines, paperChain, paperTx, poolCards, sql, type Db, type Tx } from "@gemdex/db";
 import {
   AddressBlocked, AmbiguousSend, MachineDown, type BuybackQuote, type ChainOp, type ChainVenue, type FeeVenue,
-  type GachaVenue, type GeneratedPack, type MarketVenue, type OpenResult, type Party, type PreparedTx, type Role,
+  type GachaVenue, type GeneratedPack, type MarketVenue, type OpenResult, type PaidPack, type Party, type PreparedTx, type Role,
   type TxStatus, type Venue,
 } from "./types";
 
@@ -183,21 +183,22 @@ class PaperGachaVenue implements GachaVenue {
     const machine = rows[0];
     if (!machine || !machine.isOpen) throw new MachineDown("Machine is off");
     const memo = `paper-${randomUUID()}`;
-    return { memo, raw: JSON.stringify({ memo, machine: input.machine, deliverTo: input.deliverTo }) };
+    return { memo, raw: JSON.stringify({ memo, machine: input.machine, deliverTo: input.deliverTo }), turbo: !!input.turbo };
   }
 
-  async open(memo: string): Promise<OpenResult> {
+  async open(paid: PaidPack): Promise<OpenResult> {
+    const memo = paid.memo;
     if (this.roll("open_waiting")) return { status: "waiting" };
-    if (this.roll("open_dead")) return { status: "dead" };
+    if (this.roll("open_dead")) return this.refund(memo);
     const packs = await this.db.select().from(ccPacks).where(eq(ccPacks.memo, memo));
     const pack = packs[0];
-    if (!pack) return { status: "dead" };
+    if (!pack) return this.refund(memo);
     if (pack.state === "opened") {
       return { status: "opened", nft: pack.nft, rarity: pack.rarity as Rarity, insuredValue: pack.insuredValue, card: {}, roll: pack.roll, turboBuyback: pack.buybackAmount };
     }
     const machineRows = await this.db.select().from(machines).where(eq(machines.code, pack.machineCode));
     const machine = machineRows[0];
-    if (!machine) return { status: "dead" };
+    if (!machine) return this.refund(memo);
 
     let point = this.opts.rng();
     let rarity: Rarity = "common";
@@ -246,6 +247,11 @@ class PaperGachaVenue implements GachaVenue {
     const card = rows[0];
     if (card) await this.db.update(poolCards).set({ usedAt: new Date() }).where(eq(poolCards.nft, card.nft));
     return card;
+  }
+
+  /** A pack that can never open is reported only once CC has refunded it, like the real one. */
+  private async refund(memo: string): Promise<OpenResult> {
+    return (await this.refunded(memo)) ? { status: "refunded" } : { status: "waiting" };
   }
 
   /** Paper refunds at once. Real CC takes about 2h10m. */

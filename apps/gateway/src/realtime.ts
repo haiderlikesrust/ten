@@ -2,7 +2,7 @@ import { and, asc, eq, getSetting, gt, outbox, type Database } from "@gemdex/db"
 import type { WebSocket } from "ws";
 import { readSession } from "./auth";
 
-const PUBLIC_TOPICS = new Set(["drops", "wins", "pulls", "listings", "status"]);
+const PUBLIC_TOPICS = new Set(["drops", "wins", "pulls", "listings", "status", "gifts"]);
 
 interface Client {
   socket: WebSocket;

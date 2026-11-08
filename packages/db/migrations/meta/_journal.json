@@ -29,6 +29,13 @@
       "when": 1794042000000,
       "tag": "0003_usdc_listings_only",
       "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "7",
+      "when": 1794070000000,
+      "tag": "0004_flywheel",
+      "breakpoints": true
     }
   ]
 }

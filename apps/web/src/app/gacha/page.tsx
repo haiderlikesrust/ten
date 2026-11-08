@@ -9,7 +9,7 @@ import { api } from "@/lib/api";
 import { money } from "@/lib/format";
 import { sized } from "@/lib/image";
 import { useMediaQuery } from "@/lib/media";
-import { useMe, useTrade } from "@/lib/session";
+import { useMe, useMeta, useTrade } from "@/lib/session";
 import type { Machine, Pull } from "@/lib/types";
 
 const TIERS = ["common", "uncommon", "rare", "epic"] as const;
@@ -48,6 +48,9 @@ function evTone(pct: number | null): "good" | "warn" | "plain" {
 function MachineDetail({ machine }: { machine: Machine }) {
   const { open } = useTrade();
   const me = useMe();
+  const meta = useMeta();
+  // Turbo has not been proven with real packs yet, so only paper offers it.
+  const turboOffered = !!machine.turbo && meta.data?.paper === true;
   const [turbo, setTurbo] = useState(false);
   const [count, setCount] = useState(1);
   const recent = useQuery({ queryKey: ["pulls", machine.code], queryFn: () => api<Pull[]>(`/pulls?packType=${machine.code}&limit=8`), refetchInterval: 15_000 });
@@ -114,8 +117,8 @@ function MachineDetail({ machine }: { machine: Machine }) {
           ))}
         </div>
       </div>
-      {machine.turbo ? <Toggle checked={turbo} onChange={setTurbo}>Turbo: sell Commons back automatically at {machine.buybackPct}%</Toggle> : null}
-      <Button tone="snipe" className="h-12 text-[14px]" disabled={!machine.isOpen || short} onClick={() => void open(machine, { turbo, count })}>
+      {turboOffered ? <Toggle checked={turbo} onChange={setTurbo}>Turbo: sell Commons back automatically at {machine.buybackPct}%</Toggle> : null}
+      <Button tone="snipe" className="h-12 text-[14px]" disabled={!machine.isOpen || short} onClick={() => void open(machine, { turbo: turboOffered && turbo, count })}>
         {BOLT} {short ? "Not enough USDC" : <>Open for <span className="num text-[17px] font-bold">{money(total)}</span></>}
       </Button>
       <p className="text-[12.5px] text-faint">Cards go to your connected wallet. Each roll is provably random.</p>

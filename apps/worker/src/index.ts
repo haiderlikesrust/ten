@@ -11,6 +11,8 @@ import { tickOrders } from "./orders";
 import { databaseAlive, holdLeadership, serveHealth, type Leadership, type WorkerState } from "./leader";
 import { tickPulse } from "./pulse";
 import { reconcile } from "./reconcile";
+import { slotReaderFor, tokenReaderFor } from "@gemdex/venues/holdings";
+import { tickGiftDraws, tickHolderStreaks } from "./gifts";
 import { loadVenue, modeFromEnv } from "./venue";
 
 const log = (message: string, extra?: unknown) =>
@@ -121,7 +123,9 @@ async function main() {
   log("active: this worker holds the lock");
 
   const venue = await loadVenue(mode, database.db);
-  const ctx: Ctx = { db: database.db, sql: database.sql, venue, cc: new CcRead({ apiKey: process.env.CC_API_KEY }), rng: Math.random, log, announce: (drop) => announceDrop(database.db, drop) };
+  const tokens = tokenReaderFor(mode, process.env, venue.mode === "paper" ? (wallet) => venue.chain.tokenBalance(wallet) : undefined);
+  const ctx: Ctx = { db: database.db, sql: database.sql, venue, cc: new CcRead({ mode, apiKey: process.env.CC_API_KEY }), rng: Math.random, log, announce: (drop) => announceDrop(database.db, drop), tokens };
+  ctx.slots = slotReaderFor(mode, process.env);
   log(`starting in ${mode} mode`);
 
   if (venue.mode === "paper") await seedPaperTreasury(ctx, venue as PaperVenue);
@@ -142,6 +146,9 @@ async function main() {
   every(venue.mode === "paper" ? 127_000 : 307_000, "reconcile", () => reconcile(ctx));
   every(4 * 3_600_000, "holder snapshots", () => tickHolderSnapshots(ctx));
   if (venue.mode !== "paper") every(30_000, "balances", () => tickBalances(ctx));
+  // The $TENR flywheel (docs/FLYWHEEL.md): gift draws every 30 minutes, and how long people have held.
+  every(30_000, "gift draws", () => tickGiftDraws(ctx));
+  every(600_000, "holder streaks", () => tickHolderStreaks(ctx));
   every(3_600_000, "outbox prune", () => ctx.sql`delete from outbox where at < now() - interval '1 day'`);
 
   // The first backfill is slow, so it runs behind the live loops.

@@ -1,16 +1,18 @@
 import cors from "@fastify/cors";
 import rateLimit from "@fastify/rate-limit";
 import websocket from "@fastify/websocket";
-import { BRAND, cashbackCapBps, discountPct, parseGradeNumber, pastPrices, publicDrop, pulseView, tierFor, holderBalance, usd } from "@gemdex/core";
+import { BRAND, accessMessage, cashbackCapBps, discountPct, parseGradeNumber, pastPrices, publicDrop, pulseView, tierFor, holderBalance, usd, type Access } from "@gemdex/core";
 import {
   activity, and, asc, autoFires, autoRules, dropLimits, availableBalance, balanceOf, balances, ccPacks, claims, count, desc, drops, emit, eq, feeRuns, getSetting, gt, gte, holderSnapshots,
   holdings, holds, ilike, inArray, listings, loadJson, lte, machines, orders, placeOrder, pricePoints, pulls, reconcileRuns, sales, setSetting, sql, trackedWallets,
   userAccount, users, watchlist, type Database,
 } from "@gemdex/db";
 import { CARDS_MINT, CcRead, createPaperVenue, fetchTokenMarket, type Mode, type PaperVenue, type TokenMarket } from "@gemdex/venues";
+import { checkAccess, tokenReaderFor, walletsOf } from "@gemdex/venues/holdings";
 import Fastify from "fastify";
 import { createPaperUser, grantPaperFunds, issueSession, loadUser, privySession, requireUser, userIdFrom } from "./auth";
 import { claimDrop } from "./claim";
+import { flywheelRoutes } from "./flywheel";
 import { Realtime } from "./realtime";
 
 export interface ServerOptions {
@@ -54,8 +56,31 @@ export async function buildServer(opts: ServerOptions) {
   // X-Forwarded-For, so the rate limit counts each visitor, not everyone together. Only set it when the
   // gateway is reachable through the proxy alone, as it is on Dokploy.
   const app = Fastify({ logger: false, bodyLimit: 64 * 1024, trustProxy: process.env.TRUST_PROXY === "true" });
-  const cc = new CcRead({ apiKey: process.env.CC_API_KEY });
+  const cc = new CcRead({ mode, apiKey: process.env.CC_API_KEY });
   const paper: PaperVenue | null = mode === "paper" ? createPaperVenue(db) : null;
+
+  // The access minimum (docs/FLYWHEEL.md). Every buy reads the balance live; only /me reuses a reading for a few seconds.
+  const tokenReader = tokenReaderFor(mode, process.env, paper ? (wallet) => paper.chain.tokenBalance(wallet) : undefined);
+  const accessCache = new Map<string, { at: number; access: Access }>();
+  type Account = NonNullable<Awaited<ReturnType<typeof loadUser>>>;
+  const accessOf = async (user: Account, fresh = true): Promise<Access> => {
+    const hit = accessCache.get(user.id);
+    if (!fresh && hit && Date.now() - hit.at < 10_000) return hit.access;
+    const { accessBps } = await getSetting(db, "flywheel");
+    const access = await checkAccess(tokenReader, walletsOf(user), accessBps);
+    accessCache.set(user.id, { at: Date.now(), access });
+    return access;
+  };
+  /** Null when the user may buy. Otherwise the reason, ready to send. */
+  const accessRefusal = async (user: Account): Promise<{ error: string; code: "access" | "access_unreadable"; access?: Access } | null> => {
+    try {
+      const access = await accessOf(user);
+      return access.ok ? null : { error: accessMessage(access), code: "access", access };
+    } catch {
+      // Can't read the chain: refuse rather than let anyone through, and say it's temporary.
+      return { error: "Couldn't check your $TENR balance. Try again in a moment.", code: "access_unreadable" };
+    }
+  };
   const realtime = new Realtime(database);
 
   await app.register(cors, { origin: opts.corsOrigin ?? true });
@@ -100,10 +125,10 @@ export async function buildServer(opts: ServerOptions) {
   });
 
   app.get("/meta", async () => {
-    const [drop, cashback] = await Promise.all([getSetting(db, "drops"), getSetting(db, "cashback")]);
+    const [drop, cashback, flywheel] = await Promise.all([getSetting(db, "drops"), getSetting(db, "cashback"), getSetting(db, "flywheel")]);
     return {
       mode, brand: BRAND, minPrice: drop.minPrice, maxPrice: drop.maxPrice, winCooldownSec: drop.winCooldownSec, ttlSec: drop.ttlSec, tiers: cashback.tiers,
-      paper: mode === "paper",
+      paper: mode === "paper", tokenMint: process.env.GEMDEX_TOKEN_MINT || null, accessBps: flywheel.accessBps,
     };
   });
 
@@ -285,10 +310,11 @@ export async function buildServer(opts: ServerOptions) {
       tokens = holderBalance(rows.map((row) => row.b));
     }
     const left = user.lastWinAt ? settings.winCooldownSec - (Date.now() - user.lastWinAt.getTime()) / 1000 : 0;
+    const access = await accessOf(user, false).catch(() => null);
     return {
       id: user.id, handle: user.handle, tradingWallet: user.tradingWallet, connectedWallet: user.connectedWallet, holderWallet: user.holderWallet,
       isAdmin: user.isAdmin, strikes: user.strikes, settings: user.settings, balance, available, held: balance - available,
-      cooldownSec: Math.max(0, Math.ceil(left)), tokens, tier: tierFor(tokens, cashback.tiers),
+      cooldownSec: Math.max(0, Math.ceil(left)), tokens, tier: tierFor(tokens, cashback.tiers), access,
     };
   });
 
@@ -313,6 +339,10 @@ export async function buildServer(opts: ServerOptions) {
     if (!idempotencyKey) return reply.code(400).send({ error: "Missing idempotency key" });
     if (!UUID.test(id)) return { status: "rejected", reason: "not_found" };
     if (maxPrice !== undefined && !Number.isSafeInteger(maxPrice)) return reply.code(400).send({ error: "Bad price" });
+    const user = await loadUser(db, userId);
+    if (!user) return reply.code(401).send({ error: "Session expired" });
+    const refused = await accessRefusal(user);
+    if (refused) return { status: "rejected", reason: refused.code, message: refused.error, access: refused.access };
     return claimDrop(db, { userId, dropId: id, idempotencyKey, maxPrice });
   });
 
@@ -328,7 +358,10 @@ export async function buildServer(opts: ServerOptions) {
     const { nft, price, idempotencyKey } = request.body as { nft: string; price: number; idempotencyKey: string };
     if (typeof nft !== "string" || !Number.isSafeInteger(price) || price <= 0 || !idempotencyKey) return reply.code(400).send({ error: "Bad order" });
     const user = await loadUser(db, userId);
-    const limit = user?.settings.tradeLimitUsd;
+    if (!user) return reply.code(401).send({ error: "Session expired" });
+    const refused = await accessRefusal(user);
+    if (refused) return reply.code(refused.code === "access" ? 403 : 503).send(refused);
+    const limit = user.settings.tradeLimitUsd;
     if (limit && price > usd(limit)) return reply.code(400).send({ error: `Over your ${limit} USDC trade limit` });
     return order(request, reply, userId, { userId, kind: "market_buy", params: { nft, price }, holdAmount: price, idempotencyKey });
   });
@@ -337,6 +370,10 @@ export async function buildServer(opts: ServerOptions) {
     const userId = await userIdFrom(request);
     if (!requireUser(request, reply, userId)) return;
     const { machine, turbo, count: quantity, idempotencyKey } = request.body as { machine: string; turbo?: boolean; count?: number; idempotencyKey: string };
+    const user = await loadUser(db, userId);
+    if (!user) return reply.code(401).send({ error: "Session expired" });
+    const refused = await accessRefusal(user);
+    if (refused) return reply.code(refused.code === "access" ? 403 : 503).send(refused);
     const rows = await db.select().from(machines).where(eq(machines.code, machine));
     const row = rows[0];
     if (!row || !row.isOpen) return reply.code(400).send({ error: "This machine is closed" });
@@ -382,9 +419,16 @@ export async function buildServer(opts: ServerOptions) {
     return rows[0] ?? null;
   };
 
-  const gacha = async (path: string, body: unknown) => {
-    const res = await fetch(`${cc.endpoints.gachaBase}${path}`, { method: "POST", headers: { "Content-Type": "application/json", "User-Agent": "tenner/0.1" }, body: JSON.stringify(body) });
-    return { ok: res.ok, json: (await res.json().catch(() => ({}))) as Record<string, unknown> };
+  /** A CC call that never hangs a request. `reached` is false when CC's answer is unknown (timeout or network). */
+  const gacha = async (path: string, body: unknown, timeoutMs = 15_000) => {
+    const headers: Record<string, string> = { "Content-Type": "application/json", "User-Agent": "tenner/0.1" };
+    if (process.env.CC_API_KEY) headers["x-api-key"] = process.env.CC_API_KEY;
+    try {
+      const res = await fetch(`${cc.endpoints.gachaBase}${path}`, { method: "POST", headers, body: JSON.stringify(body), signal: AbortSignal.timeout(timeoutMs) });
+      return { reached: true, ok: res.ok, json: (await res.json().catch(() => ({}))) as Record<string, unknown> };
+    } catch {
+      return { reached: false, ok: false, json: {} as Record<string, unknown> };
+    }
   };
 
   app.post("/holdings/:id/buyback-tx", async (request, reply) => {
@@ -395,8 +439,12 @@ export async function buildServer(opts: ServerOptions) {
     if (!holding) return reply.code(404).send({ error: "You do not hold this card" });
     const user = await loadUser(db, userId);
     const built = await gacha("/api/buyback", { playerAddress: user!.connectedWallet, nftAddress: holding.nft, altRecipient: user!.tradingWallet });
-    if (!built.ok) return reply.code(400).send({ error: "The buyback window has closed" });
-    return { transaction: built.json.serializedTransaction, amount: built.json.refundAmount };
+    if (!built.reached) return reply.code(503).send({ error: "Collector Crypt is not answering. Try again in a moment." });
+    const amount = Number(built.json.refundAmount);
+    // The same bounds the worker uses: anything else is not a real offer.
+    const offered = typeof built.json.serializedTransaction === "string" && Number.isSafeInteger(amount) && amount >= 10_000 && amount <= 280_000_000_000;
+    if (!built.ok || !offered) return reply.code(400).send({ error: "The buyback window has closed" });
+    return { transaction: built.json.serializedTransaction, amount };
   });
 
   app.post("/holdings/:id/buyback-submit", async (request, reply) => {
@@ -406,8 +454,16 @@ export async function buildServer(opts: ServerOptions) {
     const holding = await ownedConnected(userId, (request.params as { id: string }).id);
     if (!holding) return reply.code(404).send({ error: "You do not hold this card" });
     const { signedTransaction } = request.body as { signedTransaction: string };
-    const sent = await gacha("/api/submitTransaction", { signedTransaction });
-    if (!sent.ok) return reply.code(400).send({ error: "The sell-back did not go through" });
+    if (typeof signedTransaction !== "string" || !signedTransaction) return reply.code(400).send({ error: "Bad transaction" });
+    // CC waits for the chain before it answers, so it gets longer than other calls.
+    const sent = await gacha("/api/submitTransaction", { signedTransaction }, 45_000);
+    if (!sent.reached) return reply.code(504).send({ error: "We could not confirm the sell-back. Check your wallet before trying again." });
+    if (!sent.ok || sent.json.success !== true) return reply.code(400).send({ error: "The sell-back did not go through" });
+    // Only a confirmed sale is booked. A processed one can still fail, and the card would look sold.
+    const confirmation = sent.json.confirmationStatus;
+    if (confirmation !== "confirmed" && confirmation !== "finalized") {
+      return reply.code(409).send({ error: "The sell-back was sent but is not confirmed yet. Check your wallet before trying again." });
+    }
     await db.transaction(async (tx) => {
       // The amount comes from our stored quote, never the client. The USDC itself reaches the book through deposit sync.
       await tx.update(holdings).set({ status: "bought_back", exitPrice: holding.buybackAmount, exitedAt: new Date() }).where(eq(holdings.id, holding.id));
@@ -618,6 +674,8 @@ export async function buildServer(opts: ServerOptions) {
     const wallet = user!.holderWallet ?? user!.connectedWallet;
     if (!user!.holderWallet) await db.update(users).set({ holderWallet: wallet }).where(eq(users.id, userId));
     await paper.setTokenBalance(wallet, tokens);
+    // The balance just changed, so /me must read it fresh rather than reuse its last reading.
+    accessCache.delete(userId);
     await db.delete(holderSnapshots).where(eq(holderSnapshots.wallet, wallet));
     await db.insert(holderSnapshots).values({ wallet, balance: tokens });
     return { ok: true };
@@ -637,10 +695,10 @@ export async function buildServer(opts: ServerOptions) {
 
   app.get("/admin/overview", async (request, reply) => {
     if (!(await requireAdmin(request, reply))) return;
-    const [dropSettings, fees, cashback, ops, status] = await Promise.all([
-      getSetting(db, "drops"), getSetting(db, "fees"), getSetting(db, "cashback"), getSetting(db, "ops"), loadJson(db, "dropsStatus"),
+    const [dropSettings, fees, cashback, flywheel, ops, status] = await Promise.all([
+      getSetting(db, "drops"), getSetting(db, "fees"), getSetting(db, "cashback"), getSetting(db, "flywheel"), getSetting(db, "ops"), loadJson(db, "dropsStatus"),
     ]);
-    const accounts = await db.select().from(balances).where(sql`${balances.account} in ('drops', 'cashback', 'fee')`);
+    const accounts = await db.select().from(balances).where(sql`${balances.account} in ('drops', 'cashback', 'fee', 'gifts', 'gift_reserved', 'revenue')`);
     const runs = await db.select().from(feeRuns).orderBy(desc(feeRuns.createdAt)).limit(12);
     const checks = await db.select().from(reconcileRuns).orderBy(desc(reconcileRuns.id)).limit(6);
     const stateCounts = await db.select({ state: drops.state, kind: drops.kind, n: count() }).from(drops).groupBy(drops.state, drops.kind);
@@ -648,16 +706,22 @@ export async function buildServer(opts: ServerOptions) {
     const open = await db.select({ n: count() }).from(claims).where(eq(claims.state, "won"));
     const packs = await db.select({ n: count() }).from(ccPacks).where(gt(ccPacks.createdAt, new Date(Date.now() - 86_400_000)));
     return {
-      mode, settings: { drops: dropSettings, fees, cashback }, ops, status, accounts, runs, checks, stateCounts,
+      mode, settings: { drops: dropSettings, fees, cashback, flywheel }, ops, status, accounts, runs, checks, stateCounts,
       alerts: { stuckHolds: stuck[0]?.n ?? 0, openClaims: open[0]?.n ?? 0, packs24h: packs[0]?.n ?? 0 },
     };
   });
 
   app.patch("/admin/settings/:key", async (request, reply) => {
     if (!(await requireAdmin(request, reply))) return;
-    const { key } = request.params as { key: "drops" | "fees" | "cashback" };
-    if (!["drops", "fees", "cashback"].includes(key)) return reply.code(400).send({ error: "Unknown settings" });
+    const { key } = request.params as { key: "drops" | "fees" | "cashback" | "flywheel" };
+    if (!["drops", "fees", "cashback", "flywheel"].includes(key)) return reply.code(400).send({ error: "Unknown settings" });
     const body = request.body as Record<string, number>;
+    if (key === "flywheel") {
+      const bps = ["accessBps", "giftHoldBps", "giftBps", "giftSpendBps", "platformFeeBps", "buybackMaxSlippageBps"] as const;
+      if (bps.some((name) => body[name] !== undefined && !(Number.isInteger(body[name]) && body[name]! >= 0 && body[name]! <= 10_000))) {
+        return reply.code(400).send({ error: "Shares are basis points from 0 to 10000" });
+      }
+    }
     if (key === "drops") {
       if (!(body.minPrice! > 0) || body.maxPrice! < body.minPrice! || !(body.crashHi! <= 1) || body.crashLo! > body.crashHi! || !(body.ttlSec! > 0)) {
         return reply.code(400).send({ error: "Those drop settings do not make sense" });
@@ -691,6 +755,9 @@ export async function buildServer(opts: ServerOptions) {
     if (!(await requireAdmin(request, reply))) return;
     return setSetting(db, "ops", { armedBy: [], armedUntil: null, armRequestedAt: null });
   });
+
+  // The $TENR flywheel: its public page and gift claims (docs/FLYWHEEL.md).
+  flywheelRoutes(app, { database, accessRefusal });
 
   return app;
 }

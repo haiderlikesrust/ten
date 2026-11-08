@@ -1,6 +1,7 @@
 "use client";
 
-import { usd } from "@gemdex/core";
+import { usd, type FlywheelSettings } from "@gemdex/core";
+import { FlywheelSettingsForm } from "@/components/FlywheelSettingsForm";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Power, ShieldAlert } from "lucide-react";
 import { useEffect, useState } from "react";
@@ -18,7 +19,7 @@ interface DropSettings {
 
 interface Overview {
   mode: string;
-  settings: { drops: DropSettings; fees: { cashbackBps: number; minSwapUsd: number; maxSlippageBps: number }; cashback: { dailyCapPerUser: number; maxRateBps: number } };
+  settings: { drops: DropSettings; fees: { cashbackBps: number; minSwapUsd: number; maxSlippageBps: number }; cashback: { dailyCapPerUser: number; maxRateBps: number }; flywheel: FlywheelSettings };
   ops: { killSwitch: boolean; reconcileHold: boolean };
   status: DropsStatus | null;
   accounts: Array<{ account: string; micros: number }>;
@@ -145,6 +146,7 @@ export default function AdminPage() {
           </form>
 
           <div className="flex min-w-0 flex-col gap-3">
+            {data.settings.flywheel ? <FlywheelSettingsForm settings={data.settings.flywheel} /> : null}
             <section className="slab">
               <SectionTitle>Fee pipeline</SectionTitle>
               {data.runs.length === 0 ? (
@@ -156,8 +158,9 @@ export default function AdminPage() {
                       <span className="num w-9 text-faint">{ago(run.createdAt, now)}</span>
                       <Pill tone={run.stage === "DONE" ? "good" : run.stage === "SKIPPED" ? "plain" : "warn"}>{run.stage}</Pill>
                       <span className="num ml-auto text-mute">{money(run.usdcOut)}</span>
-                      <span className="num text-teal">{run.cashback ? `30% ${money(run.cashback)}` : ""}</span>
-                      <span className="num text-gold">{run.drops ? `70% ${money(run.drops)}` : ""}</span>
+                      <span className="num text-teal">{run.cashback ? `Cashback ${money(run.cashback)}` : ""}</span>
+                      <span className="num text-gold">{run.drops ? `Drops ${money(run.drops)}` : ""}</span>
+                      {run.usdcOut && run.cashback !== null && run.drops !== null && run.usdcOut - run.cashback - run.drops > 0 ? <span className="num text-rare">Gifts {money(run.usdcOut - run.cashback - run.drops)}</span> : null}
                     </li>
                   ))}
                 </ul>

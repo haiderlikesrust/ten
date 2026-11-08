@@ -1,24 +1,24 @@
 // The only file allowed to put a transaction on a real chain. A test enforces that.
-import { createHash } from "node:crypto";
-import { parseUsd, rarityFromTier, type Micros, type Rarity } from "@gemdex/core";
+import { createHash, createPublicKey, verify } from "node:crypto";
+import { rarityFromTier, usd, type Micros, type Rarity } from "@gemdex/core";
 import { getSetting, type Db } from "@gemdex/db";
 import { transferV1 } from "@metaplex-foundation/mpl-core";
 import { createNoopSigner, publicKey as umiKey } from "@metaplex-foundation/umi";
 import { createUmi } from "@metaplex-foundation/umi-bundle-defaults";
 import { fromWeb3JsPublicKey, toWeb3JsInstruction } from "@metaplex-foundation/umi-web3js-adapters";
 import {
-  TOKEN_PROGRAM_ID, createAssociatedTokenAccountIdempotentInstruction, createTransferCheckedInstruction, getAssociatedTokenAddressSync,
+  AccountLayout, TOKEN_PROGRAM_ID, createAssociatedTokenAccountIdempotentInstruction, createTransferCheckedInstruction, getAssociatedTokenAddressSync,
 } from "@solana/spl-token";
 import {
-  ComputeBudgetProgram, Connection, PublicKey, SystemProgram, Transaction, TransactionInstruction, VersionedMessage, VersionedTransaction,
+  ComputeBudgetProgram, Connection, PublicKey, SystemProgram, Transaction, TransactionInstruction, TransactionMessage, VersionedMessage, VersionedTransaction,
 } from "@solana/web3.js";
 import bs58 from "bs58";
 import { CARDS_MINT as CARDS_ADDRESS } from "./tokens";
-import { CC_DEVNET, CC_MAINNET, CcRead, type CcEndpoints } from "./cc-read";
+import { CcRead, ccEndpointsFor, type CcEndpoints } from "./cc-read";
 import { createSigner, type AnyTx, type Signer } from "./signers";
 import {
-  AddressBlocked, AmbiguousSend, CardFrozen, MachineDown, role, type BuybackQuote, type ChainOp, type ChainVenue, type FeeVenue, type GachaVenue, type GeneratedPack,
-  type MarketVenue, type Mode, type OpenResult, type Party, type PreparedTx, type Role, type TxStatus, type Venue,
+  AddressBlocked, AmbiguousSend, CardFrozen, MachineDown, TxRefused, role, type BuybackQuote, type ChainOp, type ChainVenue, type FeeVenue, type GachaVenue,
+  type GeneratedPack, type MarketVenue, type Mode, type OpenResult, type PaidPack, type Party, type PreparedTx, type Role, type TxStatus, type Venue,
 } from "./types";
 
 export const GENESIS = {
@@ -34,6 +34,24 @@ const PUMP_AMM = new PublicKey("pAMMBay6oceH9fJKBRHGP5D4bD4sWpmSwMn52FMfXEA");
 const ATA_PROGRAM = new PublicKey("ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL");
 const JUPITER = "https://api.jup.ag/swap/v2";
 
+/** CC answers in a second or two. A hung call must not hold a worker step past its lease. */
+const CC_TIMEOUT_MS = 15_000;
+/** CC's submitTransaction waits for confirmation before it answers, so it gets longer. */
+const SUBMIT_TIMEOUT_MS = 45_000;
+const RPC_TIMEOUT_MS = 8_000;
+/** One empty answer from chain history can be a lagging node, so an expiry is checked again this much later. */
+const EXPIRY_RECHECK_MS = 60_000;
+/** CC normally sees a paid pack within seconds. Past this it is asked to open it, at most once a minute. */
+const NUDGE_AFTER_MS = 30_000;
+const NUDGE_EVERY_MS = 60_000;
+/** Every real CC buyback, in micros, falls inside this range (the same bounds lev uses). */
+const MIN_BUYBACK = 10_000;
+const MAX_BUYBACK = 280_000_000_000;
+/** Most SOL a seller may spend on one sale: the network fee plus any rent CC asks for. */
+const MAX_SALE_LAMPORTS = 10_000_000n;
+/** CC refusing to sell from a machine right now. Nothing is charged. */
+const MACHINE_UNAVAILABLE = /machine is (low|off|empty)|off balance/i;
+
 const anchorIx = (name: string) => createHash("sha256").update(`global:${name}`).digest().subarray(0, 8);
 
 /** How a signed transaction reaches the chain. CC co-signs its own, so those go through CC. */
@@ -41,7 +59,10 @@ interface Envelope {
   via: "rpc" | "gacha" | "market" | "jupiter";
   b64: string;
   signature: string;
-  lastValidBlockHeight: number;
+  /** The transaction's own blockhash. Once it is invalid the bytes can never land. */
+  blockhash?: string;
+  /** Kept for envelopes saved before `blockhash` was. */
+  lastValidBlockHeight?: number;
   wallet?: string;
   requestId?: string;
 }
@@ -76,6 +97,7 @@ export async function assertArmed(db: Db, mode: Mode): Promise<void> {
 
 const toB64 = (bytes: Uint8Array) => Buffer.from(bytes).toString("base64");
 const fromB64 = (text: string) => Buffer.from(text, "base64");
+const blank = (signature: Uint8Array | undefined) => !signature || signature.every((b) => b === 0);
 
 function isVersioned(bytes: Buffer): boolean {
   try {
@@ -85,10 +107,131 @@ function isVersioned(bytes: Buffer): boolean {
   }
 }
 
+function publicKeyOrNull(raw: unknown): string | null {
+  if (typeof raw !== "string" || !raw) return null;
+  try {
+    return new PublicKey(raw).toBase58();
+  } catch {
+    return null;
+  }
+}
+
+/** CC's insured value, or null while it has none. A blank or zero must never read as a $0 card. */
+function insuredMicros(raw: unknown): Micros | null {
+  if (raw === null || raw === undefined || raw === "") return null;
+  const value = Number(String(raw).replace(/[$,\s]/g, ""));
+  return Number.isFinite(value) && value > 0 ? usd(value) : null;
+}
+
+const RARITIES: Rarity[] = ["common", "uncommon", "rare", "epic"];
+const rarityName = (raw: unknown): Rarity | null => {
+  const name = String(raw ?? "").toLowerCase() as Rarity;
+  return RARITIES.includes(name) ? name : null;
+};
+
+// Pack policy -------------------------------------------------------------------
+
+const PACK_MEMO_PROGRAMS = new Set(["MemoSq4gqABAXKb96qnH8TysNcWxMyWCqXgDLGmfcHr", "Memo1UhkJRfHyvLMcVucJwxXeuD728EqVDDwQDxFMNo"]);
+const PACK_MEMO = /^[a-zA-Z0-9_-]{1,64}-[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/;
+
+function signedBy(message: Uint8Array, signature: Uint8Array | undefined, key: PublicKey): boolean {
+  if (!signature || signature.length !== 64) return false;
+  const jwk = { kty: "OKP", crv: "Ed25519", x: Buffer.from(key.toBytes()).toString("base64url") };
+  return verify(null, message, createPublicKey({ key: jwk, format: "jwk" }), signature);
+}
+
+export interface PackIntent {
+  /** Our wallet, which pays for the pack and signs. */
+  player: PublicKey;
+  /** CC's payment wallet. Null where it is not known yet (devnet). */
+  wallet: PublicKey | null;
+  mint: PublicKey;
+  amount: bigint;
+  memo: string;
+}
+
+/**
+ * Checks that CC's pack transaction does what was agreed and nothing else, before anything is
+ * signed. Ported from lev (cc/pack-policy.ts), which runs it with real money. CC's message is never altered.
+ */
+export function validatePackPayment(tx: VersionedTransaction, intent: PackIntent): void {
+  const { player, wallet, mint, amount, memo } = intent;
+  if (amount <= 0n || amount > 5_000_000_000n || amount % 1_000_000n !== 0n || !PACK_MEMO.test(memo)) throw new TxRefused("invalid pack purchase intent");
+  if (tx.message.addressTableLookups.length) throw new TxRefused("the pack uses address lookup tables");
+  const message = TransactionMessage.decompile(tx.message);
+  const signers = tx.message.staticAccountKeys.slice(0, tx.message.header.numRequiredSignatures);
+  // CC's own key. Where its payment wallet is not known, the one other signer stands in for it.
+  const cc = wallet ?? signers.find((k) => !k.equals(player)) ?? null;
+  const isCc = (key: PublicKey) => !!cc && key.equals(cc);
+  const sponsored = isCc(message.payerKey);
+  // A funded player pays the fee, but CC still co-signs the memo. No other signer is allowed.
+  if (
+    (!sponsored && !message.payerKey.equals(player)) || signers.length < 1 || signers.length > 2 || (sponsored && signers.length !== 2) ||
+    !signers.some((k) => k.equals(player)) || signers.some((k) => !k.equals(player) && !isCc(k))
+  ) {
+    throw new TxRefused(`the pack asks for an unexpected signer or fee payer (fee payer ${message.payerKey.toBase58()})`);
+  }
+  const ccIndex = signers.findIndex(isCc);
+  if (ccIndex >= 0 && !signedBy(tx.message.serialize(), tx.signatures[ccIndex], cc!)) throw new TxRefused("CC's signature on the pack is missing or invalid");
+
+  const source = getAssociatedTokenAddressSync(mint, player, true);
+  // Devnet's payment wallet is not known yet, so there, and only there, the destination goes unchecked.
+  // Amount, mint, source and authority are still exact. Setting CC_PAYMENT_WALLET checks it too.
+  const destination = wallet ? getAssociatedTokenAddressSync(mint, wallet, true) : null;
+  let payments = 0, memos = 0, creates = 0, units = 200_000, microLamports = 0n;
+  const budgets = new Set<number>();
+  for (const ix of message.instructions) {
+    if (ix.programId.equals(TOKEN_PROGRAM_ID)) {
+      const checked = ix.data[0] === 12, transfer = ix.data[0] === 3;
+      const keyCount = checked ? 4 : 3;
+      // CC repeats the payer in the optional signer list. Only that exact duplicate is allowed.
+      if (
+        (!checked && !transfer) || ix.data.length !== (checked ? 10 : 9) || ix.keys.length < keyCount || ix.keys.length > keyCount + 1 ||
+        ix.keys.slice(keyCount).some((k) => !k.pubkey.equals(player) || !k.isSigner)
+      ) {
+        throw new TxRefused("unsupported token operation in the pack");
+      }
+      const to = ix.keys[checked ? 2 : 1]!, authority = ix.keys[checked ? 3 : 2]!;
+      if (
+        !ix.keys[0]!.pubkey.equals(source) || (destination && !to.pubkey.equals(destination)) || !authority.pubkey.equals(player) || !authority.isSigner ||
+        ix.data.readBigUInt64LE(1) !== amount || (checked && (!ix.keys[1]!.pubkey.equals(mint) || ix.data[9] !== 6))
+      ) {
+        throw new TxRefused("the pack pays the wrong asset, recipient or amount");
+      }
+      payments++;
+    } else if (PACK_MEMO_PROGRAMS.has(ix.programId.toBase58())) {
+      if (ix.data.toString("utf8") !== `${memo}:open` || ix.keys.some((k) => !k.pubkey.equals(player) && !isCc(k.pubkey))) throw new TxRefused("the pack memo does not match the reserved pack");
+      memos++;
+    } else if (ix.programId.equals(ComputeBudgetProgram.programId)) {
+      const op = ix.data[0]!;
+      if (ix.keys.length || budgets.has(op)) throw new TxRefused("invalid compute budget in the pack");
+      budgets.add(op);
+      if (op === 2 && ix.data.length === 5) units = ix.data.readUInt32LE(1);
+      else if (op === 3 && ix.data.length === 9) microLamports = ix.data.readBigUInt64LE(1);
+      else throw new TxRefused("unsupported compute budget in the pack");
+    } else if (ix.programId.equals(ATA_PROGRAM)) {
+      // Only an idempotent creation of CC's USDC account is needed. A part we do not know (devnet) goes unchecked.
+      const expected = [message.payerKey, destination, wallet, mint, SystemProgram.programId, TOKEN_PROGRAM_ID];
+      if (ix.data.length !== 1 || ix.data[0] !== 1 || ix.keys.length !== 6 || ix.keys.some((k, i) => !!expected[i] && !k.pubkey.equals(expected[i]!))) {
+        throw new TxRefused("unexpected token account creation in the pack");
+      }
+      creates++;
+    } else throw new TxRefused(`unexpected instruction in the pack (${ix.programId.toBase58()})`);
+  }
+  // The priority fee is units times micro-lamports per unit: at most 0.001 SOL.
+  if (payments !== 1 || memos !== 1 || creates > 1 || units < 1 || units > 400_000 || (BigInt(units) * microLamports) / 1_000_000n > 1_000_000n) {
+    throw new TxRefused("the pack's shape or fee is outside policy");
+  }
+}
+
+// Chain -------------------------------------------------------------------------
+
 class SolanaChain implements ChainVenue {
   private readonly usdc: PublicKey;
   private readonly umi;
   private readonly fetcher: typeof fetch;
+  /** When each signature was first seen expired and missing from history. Lost on restart, which only means waiting again. */
+  private readonly expiredSeen = new Map<string, number>();
 
   constructor(private readonly config: SolanaConfig) {
     this.usdc = new PublicKey(USDC[config.mode]);
@@ -147,20 +290,81 @@ class SolanaChain implements ChainVenue {
     // Treasury keys sign last, so a user signing failure never produces a half-treasury transaction.
     for (const party of [payerParty, ...signers]) await this.config.signer.sign(tx, party);
     const bytes = tx.serialize({ requireAllSignatures: true, verifySignatures: false });
-    return this.envelope({ via: "rpc", b64: toB64(bytes), signature: bs58.encode(tx.signature!), lastValidBlockHeight });
+    return this.envelope({ via: "rpc", b64: toB64(bytes), signature: bs58.encode(tx.signature!), blockhash, lastValidBlockHeight });
   }
 
-  /** CC builds these. The party signs and CC or its marketplace submits them. */
-  private async ccBuilt(raw: string, party: Party, via: "gacha" | "market"): Promise<PreparedTx> {
+  /**
+   * CC builds these. The party signs and CC or its marketplace submits them. `check` runs on the
+   * unsigned bytes and refuses anything that is not what we agreed to. Nothing is signed after the
+   * blockhash has died: those bytes could never land, and signing them again would loop forever.
+   */
+  private async ccBuilt(
+    raw: string,
+    party: Party,
+    via: "gacha" | "market",
+    policy: { check?: (tx: VersionedTransaction) => Promise<void> | void; simulate?: boolean } = {},
+  ): Promise<PreparedTx> {
     const bytes = fromB64(raw);
-    const { lastValidBlockHeight } = await this.config.connection.getLatestBlockhash("confirmed");
-    const wallet = (await this.address(party)).toBase58();
+    const unsigned = VersionedTransaction.deserialize(bytes);
+    // web3.js cannot sign newer formats. Nothing is signed, so no money moves.
+    if (unsigned.version !== 0 && unsigned.version !== "legacy") throw new TxRefused(`unsupported transaction version ${String(unsigned.version)}`);
+    await policy.check?.(unsigned);
+    const blockhash = unsigned.message.recentBlockhash;
+    if (!(await this.config.connection.isBlockhashValid(blockhash, { commitment: "confirmed" })).value) throw new TxRefused("the transaction expired before it was signed");
+
+    const wallet = await this.address(party);
     let signed: AnyTx;
     if (isVersioned(bytes)) signed = await this.config.signer.sign(VersionedTransaction.deserialize(bytes), party);
     else signed = await this.config.signer.sign(Transaction.from(bytes), party);
     const serialized = signed instanceof VersionedTransaction ? signed.serialize() : signed.serialize({ requireAllSignatures: false, verifySignatures: false });
-    const signature = signed instanceof VersionedTransaction ? bs58.encode(signed.signatures[0]!) : bs58.encode(signed.signature!);
-    return this.envelope({ via, b64: toB64(serialized), signature, lastValidBlockHeight, wallet });
+    const tx = VersionedTransaction.deserialize(serialized);
+    const index = tx.message.staticAccountKeys.findIndex((key) => key.equals(wallet));
+    // The first signature is the transaction's id. An empty one would track nothing.
+    if (blank(tx.signatures[0]) || index < 0 || blank(tx.signatures[index])) throw new Error("signing left a required signature empty");
+    if (policy.simulate) {
+      const simulation = await this.config.connection.simulateTransaction(tx, { sigVerify: true, commitment: "confirmed" });
+      if (simulation.value.err) throw new Error(`simulation failed: ${JSON.stringify(simulation.value.err)}`);
+    }
+    return this.envelope({ via, b64: toB64(serialized), signature: bs58.encode(tx.signatures[0]!), blockhash, wallet: wallet.toBase58() });
+  }
+
+  private async checkPack(tx: VersionedTransaction, op: Extract<ChainOp, { type: "ccPack" }>) {
+    const wallet = this.config.endpoints.paymentWallet;
+    validatePackPayment(tx, { player: await this.address(op.payer), wallet: wallet ? new PublicKey(wallet) : null, mint: this.usdc, amount: BigInt(op.amount), memo: op.memo });
+  }
+
+  /**
+   * Checks CC's sale by simulating it: the seller's USDC must not fall, its SOL may only pay fees,
+   * and the recipient must get at least the quote. Ported from lev (cc/sellback.ts).
+   */
+  private async checkSale(tx: VersionedTransaction, op: Extract<ChainOp, { type: "ccBuyback" }>) {
+    // CC's submitTransaction takes v0 only.
+    if (tx.version !== 0) throw new TxRefused("CC sent a sale in an unsupported transaction format");
+    const seller = await this.address(op.owner);
+    const recipient = await this.address(op.recipient);
+    const signers = tx.message.staticAccountKeys.slice(0, tx.message.header.numRequiredSignatures);
+    const sellerIndex = signers.findIndex((key) => key.equals(seller));
+    if (sellerIndex < 0) throw new TxRefused("the sale is not for this wallet to sign");
+    // Any other required signer must be CC itself, which signs before handing the transaction over.
+    if (signers.some((_, i) => i !== sellerIndex && blank(tx.signatures[i]))) throw new TxRefused("the sale asks for an unexpected signer");
+
+    const sellerAta = getAssociatedTokenAddressSync(this.usdc, seller, true);
+    const recipientAta = getAssociatedTokenAddressSync(this.usdc, recipient, true);
+    const addresses = [seller, sellerAta, ...(recipientAta.equals(sellerAta) ? [] : [recipientAta])];
+    const recipientAt = addresses.length - 1;
+    const connection = this.config.connection;
+    const before = await connection.getMultipleAccountsInfo(addresses, "confirmed");
+    const simulation = await connection.simulateTransaction(tx, {
+      sigVerify: false, replaceRecentBlockhash: true, commitment: "confirmed", accounts: { encoding: "base64", addresses: addresses.map((a) => a.toBase58()) },
+    });
+    if (simulation.value.err) throw new TxRefused(`the sale fails in simulation: ${JSON.stringify(simulation.value.err)}`);
+    const after = simulation.value.accounts;
+    if (!after || after.length !== addresses.length) throw new Error("sale simulation returned no accounts");
+    const tokens = (data: Buffer | null | undefined) => (data && data.length >= 165 ? AccountLayout.decode(data).amount : 0n);
+    const afterData = (i: number) => (after[i]?.data?.[0] ? Buffer.from(after[i]!.data[0]!, "base64") : null);
+    if (BigInt(before[0]?.lamports ?? 0) - BigInt(after[0]?.lamports ?? 0) > MAX_SALE_LAMPORTS) throw new TxRefused("the sale costs more SOL than a network fee");
+    if (tokens(afterData(1)) < tokens(before[1]?.data)) throw new TxRefused("the sale would take USDC from the seller");
+    if (tokens(afterData(recipientAt)) - tokens(before[recipientAt]?.data) < BigInt(op.amount)) throw new TxRefused("the sale pays less than CC quoted");
   }
 
   private envelope(envelope: Envelope): PreparedTx {
@@ -199,9 +403,9 @@ class SolanaChain implements ChainVenue {
         return this.own([...(await this.coreIx(op.nft, from, new PublicKey(op.to), payer, collection)), this.memo(op.memo)], [op.from]);
       }
       case "ccPack":
-        return this.ccBuilt(op.raw, op.payer, "gacha");
+        return this.ccBuilt(op.raw, op.payer, "gacha", { check: (tx) => this.checkPack(tx, op), simulate: true });
       case "ccBuyback":
-        return this.ccBuilt(op.raw, op.owner, "gacha");
+        return this.ccBuilt(op.raw, op.owner, "gacha", { check: (tx) => this.checkSale(tx, op) });
       case "ccBuy":
         return this.ccBuilt(op.raw, op.buyer, "market");
       case "ccList":
@@ -294,7 +498,7 @@ class SolanaChain implements ChainVenue {
     if (out < minOut) throw new Error(`swap quote ${out} is below the minimum ${minOut}`);
     const tx = await this.config.signer.sign(VersionedTransaction.deserialize(fromB64(String(order.transaction))), fee);
     return this.envelope({
-      via: "jupiter", b64: toB64(tx.serialize()), signature: bs58.encode(tx.signatures[0]!), requestId: String(order.requestId),
+      via: "jupiter", b64: toB64(tx.serialize()), signature: bs58.encode(tx.signatures[0]!), requestId: String(order.requestId), blockhash: tx.message.recentBlockhash,
       lastValidBlockHeight: Number(order.lastValidBlockHeight ?? (await this.config.connection.getBlockHeight()) + 150),
     });
   }
@@ -314,7 +518,7 @@ class SolanaChain implements ChainVenue {
       if (envelope.via === "rpc") {
         await this.config.connection.sendRawTransaction(fromB64(envelope.b64), { skipPreflight: true, maxRetries: 0 });
       } else if (envelope.via === "gacha") {
-        await this.post(`${this.config.endpoints.gachaBase}/api/submitTransaction`, { signedTransaction: envelope.b64 });
+        await this.submitToGacha(envelope);
       } else if (envelope.via === "market") {
         await this.post(`${this.config.endpoints.apiBase}/marketplace/broadcast`, { wallet: envelope.wallet, signedTransaction: envelope.b64 });
       } else {
@@ -326,25 +530,67 @@ class SolanaChain implements ChainVenue {
     }
   }
 
-  private async post(url: string, body: unknown): Promise<void> {
-    const res = await this.fetcher(url, { method: "POST", headers: { "Content-Type": "application/json", "User-Agent": "tenner/0.1" }, body: JSON.stringify(body) });
-    if (!res.ok) throw new Error(`${res.status} ${(await res.text()).slice(0, 200)}`);
+  /**
+   * Through CC first, so it registers the payment or sale (its indexer often misses raw sends).
+   * Anything short of CC accepting it falls back to a plain RPC send of the same bytes.
+   */
+  private async submitToGacha(envelope: Envelope) {
+    const connection = this.config.connection;
+    // The network already has it: submitting again would only wait on it again.
+    if ((await connection.getSignatureStatuses([envelope.signature])).value[0]) return;
+    let accepted = false;
+    try {
+      const reply = await this.post(`${this.config.endpoints.gachaBase}/api/submitTransaction`, { signedTransaction: envelope.b64 }, SUBMIT_TIMEOUT_MS);
+      // CC's confirmationStatus is not trusted for money: the chain status decides that on the next check.
+      accepted = reply.success === true && typeof reply.signature === "string";
+    } catch {
+      accepted = false;
+    }
+    if (!accepted) await connection.sendRawTransaction(fromB64(envelope.b64), { skipPreflight: false, maxRetries: 2 });
   }
 
+  private async post(url: string, body: unknown, timeoutMs = CC_TIMEOUT_MS): Promise<Record<string, unknown>> {
+    const headers: Record<string, string> = { "Content-Type": "application/json", "User-Agent": "tenner/0.1" };
+    if (this.config.ccApiKey && url.startsWith(this.config.endpoints.gachaBase)) headers["x-api-key"] = this.config.ccApiKey;
+    const res = await this.fetcher(url, { method: "POST", headers, body: JSON.stringify(body), signal: AbortSignal.timeout(timeoutMs) });
+    if (!res.ok) throw new Error(`${res.status} ${(await res.text()).slice(0, 200)}`);
+    return (await res.json().catch(() => ({}))) as Record<string, unknown>;
+  }
+
+  /**
+   * Only a confirmed result is final: a "processed" one can still land on another fork, or vanish.
+   * "dead" means the blockhash has expired and chain history, asked twice a minute apart, has nothing.
+   */
   async status(signature: string, raw: string): Promise<TxStatus> {
     const connection = this.config.connection;
-    const lookup = async () => (await connection.getSignatureStatuses([signature], { searchTransactionHistory: true })).value[0];
-    const first = await lookup();
-    if (first?.err) return "failed";
-    if (first?.confirmationStatus === "confirmed" || first?.confirmationStatus === "finalized") return "confirmed";
-    const { lastValidBlockHeight } = JSON.parse(raw) as Envelope;
-    const height = await connection.getBlockHeight("confirmed");
-    if (height <= lastValidBlockHeight) return "pending";
-    // The blockhash has expired. One more look closes the gap while a late landing propagates.
-    const second = await lookup();
-    if (second?.err) return "failed";
-    if (second) return "confirmed";
+    const found = (await connection.getSignatureStatuses([signature], { searchTransactionHistory: true })).value[0];
+    if (found?.confirmationStatus === "confirmed" || found?.confirmationStatus === "finalized") {
+      this.expiredSeen.delete(signature);
+      return found.err ? "failed" : "confirmed";
+    }
+    if (found) return "pending";
+    if (await this.stillValid(JSON.parse(raw) as Envelope)) return "pending";
+    // The blockhash is dead, so the bytes can never land from now on. Chain history decides what happened.
+    const landed = await connection.getTransaction(signature, { maxSupportedTransactionVersion: 0, commitment: "confirmed" });
+    if (landed && !landed.meta) return "pending";
+    if (landed) {
+      this.expiredSeen.delete(signature);
+      return landed.meta!.err ? "failed" : "confirmed";
+    }
+    const seen = this.expiredSeen.get(signature);
+    if (seen === undefined) {
+      this.expiredSeen.set(signature, Date.now());
+      return "pending";
+    }
+    if (Date.now() - seen < EXPIRY_RECHECK_MS) return "pending";
+    this.expiredSeen.delete(signature);
     return "dead";
+  }
+
+  private async stillValid(envelope: Envelope): Promise<boolean> {
+    const connection = this.config.connection;
+    if (envelope.blockhash) return (await connection.isBlockhashValid(envelope.blockhash, { commitment: "confirmed" })).value;
+    return (await connection.getBlockHeight("confirmed")) <= (envelope.lastValidBlockHeight ?? 0);
   }
 
   async usdcBalance(party: Party): Promise<Micros> {
@@ -397,11 +643,18 @@ class SolanaChain implements ChainVenue {
   }
 }
 
+// Collector Crypt gacha ------------------------------------------------------------
+
+/** CC's own reason for a refusal, e.g. "Machine is low". It decides between retrying and moving on. */
+const ccReason = (json: Record<string, unknown>) => [json.error, json.details, json.message].filter((x) => typeof x === "string" && x).join(" · ").slice(0, 160);
+
 class CcGacha implements GachaVenue {
   private readonly cards: CcRead;
+  /** When each pack was first seen waiting, and when CC was last asked to open it. Lost on restart, which only delays a nudge. */
+  private readonly waits = new Map<string, { since: number; nudgedAt: number }>();
 
-  constructor(private readonly config: SolanaConfig, private readonly chain: SolanaChain) {
-    this.cards = new CcRead({ endpoints: config.endpoints, apiKey: config.ccApiKey });
+  constructor(private readonly config: SolanaConfig) {
+    this.cards = new CcRead({ endpoints: config.endpoints, apiKey: config.ccApiKey, fetchImpl: config.fetchImpl });
   }
 
   private headers() {
@@ -409,57 +662,142 @@ class CcGacha implements GachaVenue {
   }
 
   private async call(path: string, body?: unknown): Promise<{ status: number; json: Record<string, any> }> {
-    const res = await (this.config.fetchImpl ?? fetch)(`${this.config.endpoints.gachaBase}${path}`, { method: body ? "POST" : "GET", headers: this.headers(), body: body ? JSON.stringify(body) : undefined });
+    const res = await (this.config.fetchImpl ?? fetch)(`${this.config.endpoints.gachaBase}${path}`, {
+      method: body ? "POST" : "GET", headers: this.headers(), body: body ? JSON.stringify(body) : undefined, signal: AbortSignal.timeout(CC_TIMEOUT_MS),
+    });
     return { status: res.status, json: (await res.json().catch(() => ({}))) as Record<string, any> };
   }
 
-  async generate(input: { machine: string; player: Party; deliverTo: string; turbo?: boolean }): Promise<GeneratedPack> {
-    const playerAddress = (await this.config.signer.addressOf(input.player)).toBase58();
-    const { status, json } = await this.call("/api/generatePack", { playerAddress, packType: input.machine, altPlayerAddress: input.deliverTo, turbo: !!input.turbo });
-    if (status === 403) throw new AddressBlocked("address blocked");
-    if (status !== 200) throw new MachineDown(String(json.details ?? json.error ?? `status ${status}`));
-    return { memo: json.memo, raw: json.transaction };
+  /** CC's record of a pack. A 404 is a pack CC has not registered yet. */
+  private async packStatus(memo: string): Promise<Record<string, any>> {
+    const { status, json } = await this.call(`/api/pack/status?memo=${encodeURIComponent(memo)}`);
+    if (status === 404) return {};
+    if (status !== 200) throw new Error(`pack status ${status}: ${ccReason(json)}`);
+    return json;
   }
 
-  async open(memo: string): Promise<OpenResult> {
-    const { status, json } = await this.call("/api/openPack", { memo });
-    if (status === 404 || json.code === "WAITING_FOR_WEBHOOK") return { status: "waiting" };
-    if (status === 400) return { status: "dead" };
-    if (status !== 200) throw new Error(`openPack ${status}`);
-    const pack = await this.call(`/api/pack/status?memo=${encodeURIComponent(memo)}`);
-    const send = pack.json.send ?? {};
-    const insuredValue = parseUsd(send.insured_value);
-    const rarity = (rarityFromTier(send.prize_tier) ?? String(json.rarity ?? "").toLowerCase() ?? null) as Rarity | null;
-    if (json.code === "TURBO_MODE_BUYBACK") {
-      return { status: "opened", nft: null, rarity, insuredValue, card: {}, roll: send.roll ?? null, turboBuyback: Number(json.buybackAmount) };
+  async generate(input: { machine: string; price: Micros; player: Party; deliverTo: string; turbo?: boolean }): Promise<GeneratedPack> {
+    const playerAddress = (await this.config.signer.addressOf(input.player)).toBase58();
+    // We charge the price in our catalog, so CC must be selling at exactly that price right now.
+    const catalog = await this.call("/api/machines");
+    if (catalog.status !== 200) throw new Error(`machines ${catalog.status}: ${ccReason(catalog.json)}`);
+    const listed = (Array.isArray(catalog.json.machines) ? catalog.json.machines : []).find((m: { code?: unknown }) => m?.code === input.machine);
+    if (!listed) throw new MachineDown("This machine is not in Collector Crypt's catalog");
+    const price = Number(listed.price);
+    if (!Number.isFinite(price) || usd(price) !== input.price) throw new MachineDown(`Collector Crypt's price for this machine is now ${String(listed.price)}`);
+
+    // Turbo stays off until a real Turbo pull has been seen end to end.
+    const { status, json } = await this.call("/api/generatePack", { playerAddress, packType: input.machine, altPlayerAddress: input.deliverTo, turbo: false });
+    if (status === 403) throw new AddressBlocked("address blocked");
+    if (status !== 200) {
+      const reason = ccReason(json);
+      if (MACHINE_UNAVAILABLE.test(reason)) throw new MachineDown(reason);
+      // A rate limit, an outage or a reason we do not know. Nothing happened, so the caller tries again.
+      throw new Error(`generatePack ${status}${reason ? `: ${reason}` : ""}`);
     }
-    const nft = String(json.nft_address);
+    if (typeof json.memo !== "string" || typeof json.transaction !== "string") throw new Error("Collector Crypt sent an invalid pack order");
+    return { memo: json.memo, raw: json.transaction, turbo: false };
+  }
+
+  /**
+   * Ported from lev (cc/purchase.ts). CC's record of the pack is read first and must match the
+   * payment we made. Only CC saying `refunded` means refunded, and only a confirmed delivery to the
+   * agreed wallet means opened. Anything else waits, or throws for a person to look at.
+   */
+  async open(paid: PaidPack): Promise<OpenResult> {
+    const { memo } = paid;
+    const status = await this.packStatus(memo);
+    if (status.pack?.refunded === true) return this.settled(memo, { status: "refunded" });
+    if (status.pack?.status !== "confirmed") return this.nudge(memo);
+
+    const payer = (await this.config.signer.addressOf(paid.payer)).toBase58();
+    // CC sends the card to the delivery wallet, and may record either wallet as the pack's. Both are ours.
+    const wallets = [payer, paid.deliverTo];
+    if (status.pack.transaction_signature !== paid.signature || !wallets.includes(status.pack.wallet) || status.pack.pack_type !== paid.machine) {
+      throw new Error(`CC's record of pack ${memo} does not match the payment`);
+    }
+
+    const opened = await this.call("/api/openPack", { memo });
+    if (opened.status !== 200) throw new Error(`openPack ${opened.status}: ${ccReason(opened.json)}`);
+    const code = opened.json.code;
+    if (code === "WAITING_FOR_WEBHOOK" || code === "SEND_PENDING") return { status: "waiting" };
+    if (code === "TURBO_MODE_BUYBACK") {
+      if (!paid.turbo) throw new Error(`pack ${memo} came back sold through Turbo, which was not asked for`);
+      const buyback = Number(opened.json.buybackAmount);
+      if (!Number.isSafeInteger(buyback) || buyback <= 0) throw new Error(`pack ${memo} came back sold with no valid amount`);
+      return this.settled(memo, {
+        status: "opened", nft: null, rarity: rarityFromTier(status.send?.prize_tier) ?? rarityName(opened.json.rarity), insuredValue: insuredMicros(status.send?.insured_value),
+        card: {}, roll: Number.isSafeInteger(Number(opened.json.roll)) ? Number(opened.json.roll) : null, turboBuyback: buyback,
+      });
+    }
+    const nft = publicKeyOrNull(opened.json.nft_address);
+    if (!nft) throw new Error(`openPack for ${memo} named no valid card`);
+
+    const delivered = await this.packStatus(memo);
+    if (delivered.pack?.refunded === true) return this.settled(memo, { status: "refunded" });
+    const send = delivered.send;
+    if (send?.status !== "confirmed") return { status: "waiting" };
+    if (send.nft_address !== nft || send.to_wallet !== paid.deliverTo) throw new Error(`CC's delivery of pack ${memo} does not match the card or wallet`);
+
+    // Everything below is read only after delivery is confirmed.
+    const won = opened.json.nftWon ?? {};
+    const metadata = won.content?.metadata ?? won.metadata ?? {};
+    const attributes: Array<{ trait_type?: unknown; value?: unknown }> = Array.isArray(metadata.attributes) ? metadata.attributes : [];
+    const insuredValue = insuredMicros(send.insured_value) ?? insuredMicros(attributes.find((a) => /insured.?value/i.test(String(a?.trait_type ?? "")))?.value);
+    const rarity = rarityFromTier(send.prize_tier) ?? rarityName(opened.json.rarity);
+    const roll = Number(opened.json.roll ?? send.roll);
     const detail = await this.cards.card(nft).catch(() => null);
-    return {
-      status: "opened", nft, rarity, insuredValue, roll: json.roll ?? null, turboBuyback: null,
+    return this.settled(memo, {
+      status: "opened", nft, rarity, insuredValue, roll: Number.isSafeInteger(roll) ? roll : null, turboBuyback: null,
       card: {
-        name: detail?.itemName ?? json.nftWon?.content?.metadata?.name ?? "Graded card", image: detail?.frontImage ?? null,
+        // The on-chain name is cut at 32 characters; json_name is the full one.
+        name: detail?.itemName ?? metadata.json_name ?? metadata.name ?? "Graded card", image: detail?.frontImage ?? null,
         grader: detail?.gradingCompany ?? null, grade: detail?.grade ?? null, rarity, memo,
       },
-    };
+    });
+  }
+
+  /** Asks CC to open a pack it has not registered yet, as its own site does. openPack never buys. */
+  private async nudge(memo: string): Promise<OpenResult> {
+    const now = Date.now();
+    const wait = this.waits.get(memo) ?? { since: now, nudgedAt: 0 };
+    this.waits.set(memo, wait);
+    if (now - wait.since >= NUDGE_AFTER_MS && now - wait.nudgedAt >= NUDGE_EVERY_MS) {
+      wait.nudgedAt = now;
+      await this.call("/api/openPack", { memo }).catch(() => null);
+    }
+    return { status: "waiting" };
+  }
+
+  private settled(memo: string, result: OpenResult): OpenResult {
+    this.waits.delete(memo);
+    return result;
   }
 
   async refunded(memo: string): Promise<boolean> {
-    const { json } = await this.call(`/api/pack/status?memo=${encodeURIComponent(memo)}`);
-    return json.pack?.refunded === true;
+    return (await this.packStatus(memo)).pack?.refunded === true;
   }
 
   async buybackQuote(nft: string): Promise<BuybackQuote> {
-    const { json } = await this.call(`/api/buyback/available?nft=${encodeURIComponent(nft)}`);
-    return { available: !!json.available, amount: Number(json.amount ?? 0), expiresAt: json.buybackExpiresAt ? new Date(json.buybackExpiresAt) : null };
+    const mint = publicKeyOrNull(nft);
+    if (!mint) throw new Error(`not a card address: ${nft}`);
+    const { status, json } = await this.call(`/api/buyback/available?nft=${encodeURIComponent(mint)}`);
+    if (status !== 200) throw new Error(`buyback quote ${status}: ${ccReason(json)}`);
+    if (json.available === false) return { available: false, amount: 0, expiresAt: null };
+    const amount = Number(json.amount);
+    if (json.available !== true || !Number.isSafeInteger(amount) || amount < MIN_BUYBACK || amount > MAX_BUYBACK) throw new Error("Collector Crypt sent an invalid buyback quote");
+    const expires = Date.parse(String(json.buybackExpiresAt ?? ""));
+    return { available: true, amount, expiresAt: Number.isFinite(expires) ? new Date(expires) : null };
   }
 
   async buildBuyback(input: { owner: Party; nft: string; recipient?: Party }): Promise<{ raw: string; amount: Micros }> {
     const playerAddress = (await this.config.signer.addressOf(input.owner)).toBase58();
     const altRecipient = input.recipient ? (await this.config.signer.addressOf(input.recipient)).toBase58() : undefined;
     const { status, json } = await this.call("/api/buyback", { playerAddress, nftAddress: input.nft, altRecipient });
-    if (status !== 200) throw new Error(`buyback ${status}: ${String(json.error ?? "")}`);
-    return { raw: json.serializedTransaction, amount: Number(json.refundAmount) };
+    if (status !== 200) throw new Error(`buyback ${status}: ${ccReason(json)}`);
+    const amount = Number(json.refundAmount);
+    if (typeof json.serializedTransaction !== "string" || !Number.isSafeInteger(amount) || amount < MIN_BUYBACK || amount > MAX_BUYBACK) throw new Error("Collector Crypt did not return a sell offer");
+    return { raw: json.serializedTransaction, amount };
   }
 }
 
@@ -471,6 +809,7 @@ class CcMarket implements MarketVenue {
       method: "POST",
       headers: { "Content-Type": "application/json", "User-Agent": "tenner/0.1", ...(this.config.ccApiKey ? { Authorization: `Bearer ${this.config.ccApiKey}` } : {}) },
       body: JSON.stringify(body),
+      signal: AbortSignal.timeout(CC_TIMEOUT_MS),
     });
     const text = await res.text();
     if (!res.ok) throw new Error(`${path} ${res.status}: ${text.slice(0, 200)}`);
@@ -515,7 +854,7 @@ export function buildSolanaVenue(config: SolanaConfig, addresses: Record<Role, s
   return {
     mode: config.mode,
     chain,
-    gacha: new CcGacha(config, chain),
+    gacha: new CcGacha(config),
     market: new CcMarket(config),
     fees: new SolanaFees(chain),
     address: (name) => addresses[name],
@@ -529,13 +868,18 @@ export async function createSolanaVenue(mode: Mode, db: Db, env: NodeJS.ProcessE
   }
   const rpc = env.SOLANA_RPC_URL || (mode === "devnet" ? "https://api.devnet.solana.com" : undefined);
   if (!rpc) throw new Error("SOLANA_RPC_URL is required");
-  const connection = new Connection(rpc, "confirmed");
+  // A hung RPC call must not hold a worker step past its lease.
+  const connection = new Connection(rpc, {
+    commitment: "confirmed",
+    fetch: (url, init) => fetch(url, { ...init, signal: AbortSignal.any([...(init?.signal ? [init.signal] : []), AbortSignal.timeout(RPC_TIMEOUT_MS)]) }),
+  });
   await assertCluster(connection, mode);
   const signer = await createSigner(mode, db, env);
   const roles: Role[] = ["drops", "vault", "cashback", "fee", "feePayer"];
   const addresses = Object.fromEntries(await Promise.all(roles.map(async (name) => [name, (await signer.addressOf(role(name))).toBase58()]))) as Record<Role, string>;
+  const endpoints = { ...ccEndpointsFor(mode), ...(env.CC_PAYMENT_WALLET ? { paymentWallet: new PublicKey(env.CC_PAYMENT_WALLET).toBase58() } : {}) };
   return buildSolanaVenue(
-    { mode, connection, signer, db, endpoints: mode === "devnet" ? CC_DEVNET : CC_MAINNET, ccApiKey: env.CC_API_KEY, jupiterKey: env.JUPITER_API_KEY, tokenMint: env.GEMDEX_TOKEN_MINT ? new PublicKey(env.GEMDEX_TOKEN_MINT) : undefined },
+    { mode, connection, signer, db, endpoints, ccApiKey: env.CC_API_KEY, jupiterKey: env.JUPITER_API_KEY, tokenMint: env.GEMDEX_TOKEN_MINT ? new PublicKey(env.GEMDEX_TOKEN_MINT) : undefined },
     addresses,
   );
 }

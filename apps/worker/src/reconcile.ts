@@ -15,6 +15,9 @@ const SETTLE_MS = 3_000;
 
 async function compareBooks(ctx: Ctx): Promise<Mismatch[]> {
   const rows = await ctx.db.select().from(balances).where(sql`${balances.account} like 'user:%' or ${balances.account} in ('drops', 'cashback', 'fee')`);
+  // The gift pool, and gifts waiting to be claimed, sit in the Drops wallet beside the drops money.
+  const held = await ctx.db.select().from(balances).where(inArray(balances.account, ["gifts", "gift_reserved"]));
+  const inDropsWallet = held.reduce((sum, row) => sum + row.micros, 0);
   const seen = new Set(rows.map((row) => row.account));
   for (const name of TREASURY) if (!seen.has(name)) rows.push({ account: name, micros: 0 });
 
@@ -32,7 +35,8 @@ async function compareBooks(ctx: Ctx): Promise<Mismatch[]> {
       party = role(row.account as (typeof TREASURY)[number]);
     }
     const chain = await ctx.venue.chain.usdcBalance(party);
-    if (chain !== row.micros) mismatches.push({ account: row.account, book: row.micros, chain });
+    const book = row.account === "drops" ? row.micros + inDropsWallet : row.micros;
+    if (chain !== book) mismatches.push({ account: row.account, book, chain });
   }
   return mismatches;
 }

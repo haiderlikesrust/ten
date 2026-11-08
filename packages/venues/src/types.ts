@@ -42,6 +42,12 @@ export class MachineDown extends Error {}
 export class CardFrozen extends Error {}
 /** CC refused an address (403). Nothing has happened. */
 export class AddressBlocked extends Error {}
+/**
+ * We would not sign a transaction someone else built: it expired, or it does not do what was
+ * agreed, or the offer is gone. Nothing was signed, so nothing has happened, and retrying the
+ * same bytes can never help.
+ */
+export class TxRefused extends Error {}
 
 export interface ChainVenue {
   prepare(op: ChainOp): Promise<PreparedTx>;
@@ -55,12 +61,25 @@ export interface ChainVenue {
 export interface GeneratedPack {
   memo: string;
   raw: string;
+  /** Whether CC was actually asked for Turbo. Only then may a pull come back already sold. */
+  turbo: boolean;
+}
+
+/** What `open` checks CC's records against. All of it is saved when the pack is reserved and paid. */
+export interface PaidPack {
+  memo: string;
+  machine: string;
+  payer: Party;
+  deliverTo: string;
+  turbo: boolean;
+  /** The confirmed payment. CC's record of the pack must name this exact transaction. */
+  signature: string;
 }
 
 export type OpenResult =
   | { status: "waiting" }
-  /** The pack can never open, so CC will refund it. */
-  | { status: "dead" }
+  /** CC has refunded the pack, so it will never open. */
+  | { status: "refunded" }
   | {
       status: "opened";
       nft: string | null;
@@ -80,7 +99,7 @@ export interface BuybackQuote {
 
 export interface GachaVenue {
   generate(input: { machine: string; price: Micros; player: Party; deliverTo: string; turbo?: boolean }): Promise<GeneratedPack>;
-  open(memo: string): Promise<OpenResult>;
+  open(pack: PaidPack): Promise<OpenResult>;
   refunded(memo: string): Promise<boolean>;
   buybackQuote(nft: string): Promise<BuybackQuote>;
   buildBuyback(input: { owner: Party; nft: string; recipient?: Party }): Promise<{ raw: string; amount: Micros }>;

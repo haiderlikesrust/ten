@@ -74,6 +74,10 @@ export function useUserEvents() {
     return onUserEvent((event) => {
       const { toast, setReveal } = useUi.getState();
       void client.invalidateQueries({ queryKey: ["me"] });
+      if (event.type === "gift") {
+        void client.invalidateQueries({ queryKey: ["gifts"] });
+        toast({ tone: "win", title: "You won a gift pack", detail: "Claim it from the banner at the top" });
+      }
       if (event.type === "claim") {
         if (event.state === "settled") {
           void client.invalidateQueries({ queryKey: ["portfolio"] });
@@ -128,10 +132,10 @@ export function useTrade() {
       if (!guarded()) return;
       try {
         // First click wins at the price that second, so a one-click buy sends no price limit.
-        const result = await api<{ status: string; reason?: string; retryInSec?: number; price?: number }>(`/drops/${drop.id}/claim`, { body: { idempotencyKey: newKey() } });
+        const result = await api<{ status: string; reason?: string; message?: string; retryInSec?: number; price?: number }>(`/drops/${drop.id}/claim`, { body: { idempotencyKey: newKey() } });
         if (result.status === "won") toast({ tone: "win", title: `You got it for ${formatUsd(result.price ?? 0)}`, detail: "Settling to your wallet" });
         else if (result.status === "lost") toast({ tone: "info", title: "Too slow", detail: "Someone beat you to it" });
-        else toast({ tone: "bad", title: CLAIM_MESSAGE[result.reason ?? ""] ?? "Could not snipe", detail: result.retryInSec ? `Ready in ${result.retryInSec}s` : undefined });
+        else toast({ tone: "bad", title: result.message ?? CLAIM_MESSAGE[result.reason ?? ""] ?? "Could not snipe", detail: result.retryInSec ? `Ready in ${result.retryInSec}s` : undefined });
         void client.invalidateQueries({ queryKey: ["me"] });
       } catch (error) {
         fail(error);

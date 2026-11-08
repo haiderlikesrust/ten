@@ -45,22 +45,27 @@ export async function tickFees(ctx: Ctx): Promise<void> {
     if (result.status !== "confirmed") return;
     const usdcOut = await ctx.venue.fees.usdcReceived(result.signature!);
     await ctx.db.transaction((tx) => post(tx, `fee_in:${run!.id}`, "fee_in", [{ account: "world", delta: -usdcOut }, { account: "fee", delta: usdcOut }]));
-    const split = splitFees(usdcOut, settings.cashbackBps);
+    const { giftBps } = await getSetting(ctx.db, "flywheel");
+    const split = splitFees(usdcOut, settings.cashbackBps, giftBps);
     await advance(ctx, run, "SWAPPED", { usdcOut, cashback: split.cashback, drops: split.drops });
     run = { ...run, stage: "SWAPPED", usdcOut, cashback: split.cashback, drops: split.drops };
   }
 
   if (run.stage === "SWAPPED") {
     const { cashback, drops } = { cashback: run.cashback ?? 0, drops: run.drops ?? 0 };
-    const result = await sendOnce(ctx, "fee_split", run.id, async () => ({ type: "split", cashback, drops, memo: `${BRAND.memoPrefix}:fees:${run!.id}` }), { retryFailed: true });
+    // The gift pool is whatever is left, and is held in the Drops wallet with the drops money. Runs swapped
+    // before the gift pool existed leave nothing over, so they pay out exactly as before.
+    const gifts = Math.max(0, (run.usdcOut ?? 0) - cashback - drops);
+    const result = await sendOnce(ctx, "fee_split", run.id, async () => ({ type: "split", cashback, drops: drops + gifts, memo: `${BRAND.memoPrefix}:fees:${run!.id}` }), { retryFailed: true });
     if (result.status !== "confirmed") return;
     await ctx.db.transaction(async (tx) => {
       await post(tx, `fee_split:${run!.id}`, "fee_split", [
-        { account: "fee", delta: -(cashback + drops) },
+        { account: "fee", delta: -(cashback + drops + gifts) },
         { account: "cashback", delta: cashback },
         { account: "drops", delta: drops },
+        ...(gifts > 0 ? [{ account: "gifts", delta: gifts }] : []),
       ]);
-      await emit(tx, "status", { type: "feeRun", cashback, drops });
+      await emit(tx, "status", { type: "feeRun", cashback, drops, gifts });
     });
     await advance(ctx, run, "DONE");
   }

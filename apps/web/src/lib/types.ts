@@ -1,3 +1,4 @@
+import type { Access } from "@gemdex/core";
 export interface Listing {
   nft: string;
   name: string;
@@ -124,6 +125,8 @@ export interface Me {
   cooldownSec: number;
   tokens: number;
   tier: Tier | null;
+  /** The $TENR access minimum. Null when the chain couldn't be read. */
+  access: Access | null;
 }
 
 export interface Meta {
@@ -134,6 +137,8 @@ export interface Meta {
   winCooldownSec: number;
   ttlSec: number;
   tiers: Tier[];
+  tokenMint: string | null;
+  accessBps: number;
 }
 
 export interface Holding {

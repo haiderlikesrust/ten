@@ -3,11 +3,11 @@ import {
   pauseReason, pickMachine, publicDrop, pulseView, usd, type DropState, type MachineEcon, type PauseReason,
 } from "@gemdex/core";
 import {
-  activity, and, balanceOf, ccPacks, claims, closeHold, drops, emit, eq, getSetting, holdings, inArray, loadJson, machines,
+  activity, and, balanceOf, ccPacks, claims, closeHold, drops, emit, eq, getSetting, holdings, inArray, isNull, loadJson, machines,
   post, saveJson, sql, userAccount, users, type Drop,
 } from "@gemdex/db";
-import { AddressBlocked, CardFrozen, MachineDown, role, trader, type OpenResult } from "@gemdex/venues";
-import { sendOnce } from "./chain-tx";
+import { AddressBlocked, CardFrozen, MachineDown, TxRefused, role, trader, type OpenResult, type Party } from "@gemdex/venues";
+import { PACK_REVIEW_MS, REVIEW_CHECK_MS, confirmedSignature, sendOnce } from "./chain-tx";
 import type { Ctx } from "./ctx";
 import { buildPath } from "./pulse";
 
@@ -22,6 +22,11 @@ const DUE_STATES: DropState[] = [
 
 const RETRY_MS = 1_000;
 const REFUND_CHECK_MS = 60_000;
+/** Nothing is reserved or paid before a pack is generated, so an outage this long can skip a revealed drop. */
+const GENERATE_GIVE_UP_MS = 10 * 60_000;
+/** Each fresh sell-back offer re-checks the quote. Three failed offers stop for a person instead of looping. */
+const MAX_SELLBACK_ATTEMPTS = 3;
+const PACK_REVIEW = "needs review: CC has not delivered or refunded this pack after 6 hours";
 
 export function toEcon(row: typeof machines.$inferSelect): MachineEcon {
   return {
@@ -120,10 +125,43 @@ async function ensurePack(ctx: Ctx, d: Drop, deliverTo: string, userId: string |
   if (d.memo) return d;
   const generated = await ctx.venue.gacha.generate({ machine: d.machineCode, price: d.packPrice, player: role("drops"), deliverTo });
   await ctx.db.insert(ccPacks).values({
-    memo: generated.memo, dropId: d.id, userId, machineCode: d.machineCode, price: d.packPrice, deliverTo, raw: generated.raw,
+    memo: generated.memo, dropId: d.id, userId, machineCode: d.machineCode, price: d.packPrice, deliverTo, turbo: generated.turbo, raw: generated.raw,
   });
-  const updated = await ctx.db.update(drops).set({ memo: generated.memo, updatedAt: new Date() }).where(eq(drops.id, d.id)).returning();
-  return updated[0]!;
+  // Only one run may name the drop's pack. A slow, overlapping run's pack is never paid, so it costs nothing.
+  const updated = await ctx.db.update(drops).set({ memo: generated.memo, updatedAt: new Date() }).where(and(eq(drops.id, d.id), isNull(drops.memo))).returning();
+  return updated[0] ?? (await ctx.db.select().from(drops).where(eq(drops.id, d.id)))[0]!;
+}
+
+async function packOf(ctx: Ctx, memo: string) {
+  const pack = (await ctx.db.select().from(ccPacks).where(eq(ccPacks.memo, memo)))[0]!;
+  return { pack, overdue: Date.now() - pack.createdAt.getTime() > PACK_REVIEW_MS };
+}
+
+/**
+ * Opens a paid pack, or returns null after scheduling the next look. Past the review deadline the
+ * drop stays where it is, flagged for a person, and CC is asked again only now and then. No state
+ * can end it safely: only CC's delivery or refund settles where the money went.
+ */
+async function openPaid(ctx: Ctx, d: Drop, payer: Party): Promise<Exclude<OpenResult, { status: "waiting" }> | null> {
+  const { pack, overdue } = await packOf(ctx, d.memo!);
+  let opened: OpenResult;
+  try {
+    const signature = await confirmedSignature(ctx, "pack", pack.memo);
+    opened = await ctx.venue.gacha.open({ memo: pack.memo, machine: pack.machineCode, payer, deliverTo: pack.deliverTo, turbo: pack.turbo, signature });
+  } catch (error) {
+    if (!overdue) throw error;
+    await later(ctx, d, REVIEW_CHECK_MS, `${PACK_REVIEW}: ${error instanceof Error ? error.message : String(error)}`);
+    return null;
+  }
+  if (opened.status !== "waiting") return opened;
+  await (overdue ? later(ctx, d, REVIEW_CHECK_MS, PACK_REVIEW) : later(ctx, d));
+  return null;
+}
+
+/** CC refunds a pack it cannot open on its own schedule. Refunding first could pay twice. */
+async function waitForRefund(ctx: Ctx, d: Drop) {
+  const { overdue } = await packOf(ctx, d.memo!);
+  return overdue ? later(ctx, d, REVIEW_CHECK_MS, PACK_REVIEW) : later(ctx, d, REFUND_CHECK_MS);
 }
 
 async function payPack(ctx: Ctx, d: Drop) {
@@ -157,27 +195,33 @@ async function stepRevealed(ctx: Ctx, d: Drop) {
         current = await ensurePack(ctx, d, ctx.venue.address("vault"), null);
       } catch (error) {
         if (error instanceof MachineDown || error instanceof AddressBlocked) return void (await move(ctx, d, "SKIPPED", { lastError: error.message }));
+        if (Date.now() - d.createdAt.getTime() > GENERATE_GIVE_UP_MS) {
+          return void (await move(ctx, d, "SKIPPED", { lastError: `CC is not answering: ${error instanceof Error ? error.message : String(error)}` }));
+        }
         throw error;
       }
       const result = await payPack(ctx, current);
       if (result.status === "confirmed") await move(ctx, current, "PACK_PAID");
-      else if (result.status === "failed") await move(ctx, current, "SKIPPED", { lastError: "pack payment failed" });
+      else if (result.status === "failed") await move(ctx, current, "SKIPPED", { lastError: `pack payment failed${result.reason ? `: ${result.reason}` : ""}` });
       else await later(ctx, current);
       return;
     }
     case "PACK_PAID":
       return void (await move(ctx, d, "OPENING"));
     case "OPENING": {
-      const opened = await ctx.venue.gacha.open(d.memo!);
-      if (opened.status === "waiting") return later(ctx, d);
-      if (opened.status === "dead") return void (await move(ctx, d, "AWAIT_AUTO_REFUND"));
+      const opened = await openPaid(ctx, d, role("drops"));
+      if (!opened) return;
+      if (opened.status === "refunded") return void (await move(ctx, d, "AWAIT_AUTO_REFUND"));
       await recordOpen(ctx, d.memo!, opened);
       const deadline = new Date(Date.now() + (BUYBACK_WINDOW_SEC - BUYBACK_SAFETY_SEC) * 1000);
       await move(ctx, d, "IN_VAULT", { nft: opened.nft, rarity: opened.rarity, insuredValue: opened.insuredValue, card: opened.card, buybackDeadline: deadline });
       return;
     }
     case "IN_VAULT": {
-      const path = buildPath(ctx, { value: d.insuredValue ?? d.packPrice, min: settings.minPrice, crash: [settings.crashLo, settings.crashHi], seconds: settings.ttlSec });
+      // A card CC gives no value cannot be priced. Listing it from the pack price, or from zero, could sell
+      // it for far less than it is worth, so it goes straight back to CC instead.
+      if (!d.insuredValue) return sellBack(ctx, d);
+      const path = buildPath(ctx, { value: d.insuredValue, min: settings.minPrice, crash: [settings.crashLo, settings.crashHi], seconds: settings.ttlSec });
       const now = new Date();
       await move(ctx, d, "LIVE", { path, price: path[0]!, opensAt: now, expiresAt: new Date(now.getTime() + (settings.ttlSec + settings.lockedHoldSec) * 1000) });
       return;
@@ -222,7 +266,7 @@ async function stepRevealed(ctx: Ctx, d: Drop) {
       return sellBack(ctx, d);
     }
     case "AWAIT_AUTO_REFUND": {
-      if (!(await ctx.venue.gacha.refunded(d.memo!))) return later(ctx, d, REFUND_CHECK_MS);
+      if (!(await ctx.venue.gacha.refunded(d.memo!))) return waitForRefund(ctx, d);
       await ctx.db.transaction((tx) => post(tx, `refund:${d.memo}`, "pack_refund", [{ account: "cc", delta: -d.packPrice }, { account: "drops", delta: d.packPrice }]));
       return void (await move(ctx, d, "REFUNDED"));
     }
@@ -232,12 +276,19 @@ async function stepRevealed(ctx: Ctx, d: Drop) {
 /** Unsold cards go back to CC, which returns most of the pack price to the treasury. */
 async function sellBack(ctx: Ctx, d: Drop) {
   const result = await sendOnce(ctx, "buyback", d.id, async () => {
+    // The window can close, or the card be sold, between offers, so each fresh one checks again.
+    const quote = await ctx.venue.gacha.buybackQuote(d.nft!);
+    if (!quote.available) throw new TxRefused("CC will not buy this card back");
     const built = await ctx.venue.gacha.buildBuyback({ owner: role("vault"), nft: d.nft!, recipient: role("drops") });
     await ctx.db.update(drops).set({ soldBackFor: built.amount }).where(eq(drops.id, d.id));
     return { type: "ccBuyback", owner: role("vault"), recipient: role("drops"), nft: d.nft!, amount: built.amount, raw: built.raw };
-  }, { retryFailed: true });
+  }, { retryFailed: true, maxAttempts: MAX_SELLBACK_ATTEMPTS });
   if (result.status === "pending") return later(ctx, d);
-  if (result.status === "failed") return later(ctx, d, 30_000, "buyback failed, will retry");
+  if (result.status === "failed") {
+    // The card stays in the Vault, flagged for a person, and is looked at again now and then.
+    if (result.reason) return later(ctx, d, REVIEW_CHECK_MS, `needs review: sell-back stopped (${result.reason})`);
+    return later(ctx, d, 30_000, "buyback failed, will retry");
+  }
   const saved = await ctx.db.select({ amount: drops.soldBackFor }).from(drops).where(eq(drops.id, d.id));
   const amount = saved[0]?.amount ?? 0;
   await ctx.db.transaction((tx) => post(tx, `buyback:${d.id}`, "buyback", [{ account: "cc", delta: -amount }, { account: "drops", delta: amount }]));
@@ -330,9 +381,9 @@ async function stepHidden(ctx: Ctx, d: Drop) {
       return void (await move(ctx, d, "QUOTED", { memo: null, packPayAttempts: attempts }));
     }
     case "OPENING": {
-      const opened = await ctx.venue.gacha.open(d.memo!);
-      if (opened.status === "waiting") return later(ctx, d);
-      if (opened.status === "dead") return void (await move(ctx, d, "AWAIT_AUTO_REFUND"));
+      const opened = await openPaid(ctx, d, role("drops"));
+      if (!opened) return;
+      if (opened.status === "refunded") return void (await move(ctx, d, "AWAIT_AUTO_REFUND"));
       await recordOpen(ctx, d.memo!, opened);
       // Drop money was already debited above, so only the delivery is recorded here.
       await deliverHidden(ctx, d, claim, opened);
@@ -340,7 +391,7 @@ async function stepHidden(ctx: Ctx, d: Drop) {
     }
     case "AWAIT_AUTO_REFUND": {
       // Refunding before CC does could leave the winner with both a card and their money.
-      if (!(await ctx.venue.gacha.refunded(d.memo!))) return later(ctx, d, REFUND_CHECK_MS);
+      if (!(await ctx.venue.gacha.refunded(d.memo!))) return waitForRefund(ctx, d);
       await ctx.db.transaction((tx) => post(tx, `refund:${d.memo}`, "pack_refund", [{ account: "cc", delta: -d.packPrice }, { account: "drops", delta: d.packPrice }]));
       return void (await move(ctx, d, "REFUND_DUE"));
     }

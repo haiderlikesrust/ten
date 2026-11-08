@@ -1,6 +1,6 @@
 import {
-  DEFAULT_CASHBACK_SETTINGS, DEFAULT_DROP_SETTINGS, DEFAULT_FEE_SETTINGS,
-  type CashbackSettings, type DropSettings, type FeeSettings,
+  DEFAULT_CASHBACK_SETTINGS, DEFAULT_DROP_SETTINGS, DEFAULT_FEE_SETTINGS, DEFAULT_FLYWHEEL_SETTINGS,
+  type CashbackSettings, type DropSettings, type FeeSettings, type FlywheelSettings,
 } from "@gemdex/core";
 import { eq } from "drizzle-orm";
 import type { DbOrTx } from "./client";
@@ -20,6 +20,7 @@ export interface Settings {
   drops: DropSettings;
   fees: FeeSettings;
   cashback: CashbackSettings;
+  flywheel: FlywheelSettings;
   ops: OpsFlags;
 }
 
@@ -27,6 +28,7 @@ const DEFAULTS: Settings = {
   drops: DEFAULT_DROP_SETTINGS,
   fees: DEFAULT_FEE_SETTINGS,
   cashback: DEFAULT_CASHBACK_SETTINGS,
+  flywheel: DEFAULT_FLYWHEEL_SETTINGS,
   ops: { killSwitch: false, reconcileHold: false, armedUntil: null, armedBy: [], armRequestedAt: null },
 };
 

@@ -3,6 +3,7 @@ import {
   activeRulesQuery, autoFires, emit, eq, listings, machines, placeOrder, poolCards, pricePoints, pulls, sales, sql,
 } from "./ingest-db";
 import { isUsdcListing, normalizeListing, normalizeMachine, normalizePoolCard, normalizeWinner, type NormalListing } from "@gemdex/venues";
+import { mayBuy } from "./access";
 import type { Ctx } from "./ctx";
 
 export async function ingestMachines(ctx: Ctx): Promise<void> {
@@ -126,6 +127,8 @@ async function evaluateRules(ctx: Ctx, fresh: NormalListing[]): Promise<void> {
     const asRule: AutoRule = { ...rule, enabled: rule.enabled, minGrade: rule.minGrade };
     for (const listing of fresh) {
       if (!matchesRule(asRule, listing, spent)) continue;
+      // Short of the $TENR minimum: this listing passes. The rule keeps watching for the next one.
+      if (!(await mayBuy(ctx, rule.userId))) break;
       const fired = await ctx.db.insert(autoFires).values({ ruleId: rule.id, nft: listing.nft, price: listing.price }).onConflictDoNothing().returning({ id: autoFires.id });
       if (fired.length === 0) continue;
       await ctx.db.transaction((tx) =>

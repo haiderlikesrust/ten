@@ -1,10 +1,19 @@
 import { and, chainTx, desc, eq, type Db } from "@gemdex/db";
-import { AmbiguousSend, type ChainOp } from "@gemdex/venues";
+import { AmbiguousSend, TxRefused, type ChainOp } from "@gemdex/venues";
 import type { Ctx } from "./ctx";
 
 export interface SendResult {
   status: "confirmed" | "failed" | "pending";
   signature?: string;
+  /** Set when nothing more will be tried: the venue refused to sign, or every attempt is used up. */
+  reason?: string;
+}
+
+export interface SendOptions {
+  deadlineAt?: Date | null;
+  retryFailed?: boolean;
+  /** Most signed versions to try before giving up. Unlimited when unset. */
+  maxAttempts?: number;
 }
 
 async function mark(db: Db, id: string, status: "sent" | "confirmed" | "failed" | "dead") {
@@ -17,13 +26,15 @@ async function mark(db: Db, id: string, status: "sent" | "confirmed" | "failed" 
  * Signed bytes are saved before the first send. A crash or timeout can then only ever
  * rebroadcast the identical transaction, which can land at most once. A new signature
  * is created only after the old one is proven dead, so two versions can never both land.
+ * Bytes someone else built (CC) cannot be rebuilt: once they are dead the venue refuses to
+ * sign them again, and the send ends failed.
  */
 export async function sendOnce(
   ctx: Ctx,
   purpose: string,
   ref: string,
   build: () => Promise<ChainOp>,
-  opts: { deadlineAt?: Date | null; retryFailed?: boolean } = {},
+  opts: SendOptions = {},
 ): Promise<SendResult> {
   const rows = await ctx.db
     .select()
@@ -37,7 +48,7 @@ export async function sendOnce(
   if (latest.status === "confirmed") return { status: "confirmed", signature: latest.signature };
   if (latest.status === "failed") {
     // A failed transaction moved nothing, so work that has to finish can safely send a new one.
-    if (opts.retryFailed) return fresh(ctx, purpose, ref, latest.attempt + 1, build, opts);
+    if (opts.retryFailed) return fresh(ctx, purpose, ref, latest.attempt + 1, build, opts, latest.signature);
     return { status: "failed", signature: latest.signature };
   }
 
@@ -58,7 +69,7 @@ export async function sendOnce(
 
   await mark(ctx.db, latest.id, "dead");
   if (opts.deadlineAt && Date.now() > opts.deadlineAt.getTime()) return { status: "failed", signature: latest.signature };
-  return fresh(ctx, purpose, ref, latest.attempt + 1, build, opts);
+  return fresh(ctx, purpose, ref, latest.attempt + 1, build, opts, latest.signature);
 }
 
 async function fresh(
@@ -67,9 +78,18 @@ async function fresh(
   ref: string,
   attempt: number,
   build: () => Promise<ChainOp>,
-  opts: { deadlineAt?: Date | null },
+  opts: SendOptions,
+  previous?: string,
 ): Promise<SendResult> {
-  const prepared = await ctx.venue.chain.prepare(await build());
+  if (opts.maxAttempts && attempt > opts.maxAttempts) return { status: "failed", signature: previous, reason: `failed ${opts.maxAttempts} times` };
+  let prepared;
+  try {
+    prepared = await ctx.venue.chain.prepare(await build());
+  } catch (error) {
+    // Nothing was signed. Asking again would only get the same answer.
+    if (error instanceof TxRefused) return { status: "failed", signature: previous, reason: error.message };
+    throw error;
+  }
   const inserted = await ctx.db
     .insert(chainTx)
     .values({ purpose, ref, attempt, signature: prepared.signature, raw: prepared.raw, deadlineAt: opts.deadlineAt ?? null })
@@ -96,3 +116,22 @@ async function broadcast(ctx: Ctx, raw: string): Promise<boolean> {
     throw error;
   }
 }
+
+/** The landed payment for a send, which CC's record of a pack must name. */
+export async function confirmedSignature(ctx: Ctx, purpose: string, ref: string): Promise<string> {
+  const rows = await ctx.db
+    .select({ signature: chainTx.signature })
+    .from(chainTx)
+    .where(and(eq(chainTx.purpose, purpose), eq(chainTx.ref, ref), eq(chainTx.status, "confirmed")))
+    .limit(1);
+  if (!rows[0]) throw new Error(`no confirmed ${purpose} for ${ref}`);
+  return rows[0].signature;
+}
+
+/**
+ * CC opens a paid pack within a minute, and refunds one it cannot open in about 2h10m. A pack
+ * still unsettled after this needs a person, so the work stops hammering CC and says so.
+ */
+export const PACK_REVIEW_MS = 6 * 3600_000;
+/** How often something flagged for review is looked at again, in case it settles by itself. */
+export const REVIEW_CHECK_MS = 10 * 60_000;

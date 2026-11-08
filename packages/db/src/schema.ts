@@ -426,4 +426,56 @@ export const paperTx = pgTable("paper_tx", {
   at: ts("at").notNull().defaultNow(),
 });
 
+// $TENR flywheel (docs/FLYWHEEL.md) ----------------------------------------
+
+/** One gift draw every 30 minutes. Entries and seed are public, so anyone can recompute the winner. */
+export const giftDraws = pgTable("gift_draws", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  /** The half-hour this draw belongs to. One draw per slot. */
+  slotAt: ts("slot_at").notNull(),
+  grp: text("grp").$type<"active" | "holders" | "blasters">(),
+  /** committed, drawn, claimed, expired, or rolled (nobody won; the pot grows). */
+  state: text("state").notNull(),
+  prize: micros("prize"),
+  machineCode: text("machine_code"),
+  entries: jsonb("entries").$type<Array<{ userId: string; wallet: string; weight: number }>>().notNull().default([]),
+  entriesHash: text("entries_hash"),
+  /** Solana slot whose blockhash seeds the draw. Null in paper mode, which uses a server seed. */
+  targetSlot: bigint("target_slot", { mode: "number" }),
+  blockhash: text("blockhash"),
+  seed: text("seed"),
+  winnerUserId: uuid("winner_user_id").references(() => users.id),
+  winnerWallet: text("winner_wallet"),
+  /** The gacha order that opens the gift pack once claimed. */
+  orderId: uuid("order_id"),
+  reason: text("reason"),
+  drawnAt: ts("drawn_at"),
+  expiresAt: ts("expires_at"),
+  createdAt: createdAt(),
+}, (t) => [uniqueIndex("gift_draws_slot_idx").on(t.slotAt), index("gift_draws_winner_idx").on(t.winnerUserId, t.drawnAt)]);
+
+/** How long each user has held at least the long-holder share without a break. */
+export const holderStreaks = pgTable("holder_streaks", {
+  userId: uuid("user_id").primaryKey().references(() => users.id),
+  held: doublePrecision("held").notNull().default(0),
+  /** When they last went from under the share to over it. Null while under. */
+  aboveSince: ts("above_since"),
+  checkedAt: ts("checked_at").notNull().defaultNow(),
+});
+
+/** Outside revenue swapped to $TENR and burned. */
+export const buybacks = pgTable("buybacks", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  /** PENDING, SWAPPED, BURNED, DONE, or SKIPPED. */
+  stage: text("stage").notNull().default("PENDING"),
+  usdcIn: micros("usdc_in").notNull(),
+  tenrOut: doublePrecision("tenr_out"),
+  swapSig: text("swap_sig"),
+  burnSig: text("burn_sig"),
+  error: text("error"),
+  createdAt: createdAt(),
+  updatedAt: ts("updated_at").notNull().defaultNow(),
+});
+
+export type GiftDraw = typeof giftDraws.$inferSelect;
 export type Drop = typeof drops.$inferSelect;

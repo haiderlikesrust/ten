@@ -8,10 +8,13 @@ import { createTestDb, type TestDb } from "../../../tools/testdb";
 let t: TestDb;
 let app: Awaited<ReturnType<typeof buildServer>>;
 
-async function login(handle: string) {
+/** Signs in a paper user. They hold the $TENR access minimum (0.1% of 1B) unless told otherwise. */
+async function login(handle: string, tokens = 1_000_000) {
   const res = await app.inject({ method: "POST", url: "/auth/paper", payload: { handle } });
   const { token } = res.json() as { token: string };
-  return { authorization: `Bearer ${token}` };
+  const headers = { authorization: `Bearer ${token}` };
+  if (tokens > 0) await app.inject({ method: "POST", url: "/rewards/paper-tokens", headers, payload: { tokens } });
+  return headers;
 }
 
 beforeAll(async () => {
@@ -198,3 +201,47 @@ describe("mode gates", () => {
 
 void users;
 void setSetting;
+
+describe("$TENR access minimum", () => {
+  const buy = (headers: Record<string, string>) =>
+    app.inject({ method: "POST", url: "/orders/buy", headers, payload: { nft: "x", price: usd(1), idempotencyKey: randomUUID() } });
+  const open = (headers: Record<string, string>) =>
+    app.inject({ method: "POST", url: "/orders/open", headers, payload: { machine: "pokemon_25", idempotencyKey: randomUUID() } });
+
+  it("refuses buys, pack opens and Pulse claims below 0.1% of supply, and says why", async () => {
+    const headers = await login("no-tenr", 0);
+    const bought = await buy(headers);
+    expect(bought.statusCode).toBe(403);
+    expect(bought.json()).toMatchObject({ code: "access", error: "Hold 0.1% of $TENR to buy" });
+    expect((await open(headers)).statusCode).toBe(403);
+    const claim = await app.inject({ method: "POST", url: `/drops/${randomUUID()}/claim`, headers, payload: { idempotencyKey: randomUUID() } });
+    expect(claim.json()).toMatchObject({ status: "rejected", reason: "access" });
+    const me = (await app.inject({ url: "/me", headers })).json() as { access: { enforced: boolean; ok: boolean; needed: number; held: number } };
+    expect(me.access).toMatchObject({ enforced: true, ok: false, needed: 1_000_000, held: 0 });
+  });
+
+  it("lets a holder through at exactly 0.1%, and not one token under", async () => {
+    const short = await login("almost", 999_999);
+    expect((await buy(short)).statusCode).toBe(403);
+    const exact = await login("exactly", 1_000_000);
+    // Past the minimum the order goes in (paper users start with $500).
+    expect((await buy(exact)).statusCode).toBe(200);
+  });
+
+  it("still lets anyone browse without $TENR", async () => {
+    const headers = await login("browser", 0);
+    for (const url of ["/me", "/portfolio", "/rewards", "/listings", "/meta"]) {
+      expect(`${url} ${(await app.inject({ url, headers })).statusCode}`).toBe(`${url} 200`);
+    }
+  });
+
+  it("turns off when the minimum is set to 0", async () => {
+    const headers = await login("free", 0);
+    await setSetting(t.db, "flywheel", { accessBps: 0 });
+    try {
+      expect((await buy(headers)).statusCode).toBe(200);
+    } finally {
+      await setSetting(t.db, "flywheel", { accessBps: 10 });
+    }
+  });
+});

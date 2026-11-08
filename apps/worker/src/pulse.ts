@@ -1,6 +1,7 @@
 import { generatePath, priceAt, type Micros, type PathInput } from "@gemdex/core";
 import { and, claimDrop, dropLimits, drops, emit, eq, inArray, paperChain, post, sql, type Drop } from "@gemdex/db";
 import type { PaperVenue } from "@gemdex/venues";
+import { mayBuy } from "./access";
 import type { Ctx } from "./ctx";
 
 const WALLET = "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz";
@@ -24,6 +25,8 @@ async function runLimits(ctx: Ctx, live: Drop[], at: number) {
   for (const limit of limits) {
     const drop = live.find((d) => d.id === limit.dropId);
     if (!drop || nowPrice(drop, at) > limit.maxPrice) continue;
+    // Short of the $TENR minimum: the order waits, like during a cooldown, and fires once they hold enough.
+    if (!(await mayBuy(ctx, limit.userId))) continue;
     const result = await claimDrop(ctx.db, { userId: limit.userId, dropId: limit.dropId, idempotencyKey: `limit:${limit.id}`, maxPrice: limit.maxPrice });
     // These pass on their own, so the order stays open and tries again next tick.
     if (result.status === "rejected" && LIMIT_WAITS.has(result.reason)) continue;

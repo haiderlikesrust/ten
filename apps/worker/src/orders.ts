@@ -1,14 +1,18 @@
 import { BRAND } from "@gemdex/core";
 import {
-  activity, and, ccPacks, closeHold, emit, eq, holdings, inArray, listings, machines, orders, post, sales, sql, userAccount, users,
+  activity, and, ccPacks, closeHold, emit, eq, giftDraws, holdings, inArray, listings, machines, orders, post, sales, sql, userAccount, users,
 } from "@gemdex/db";
-import { MachineDown, AddressBlocked, role, trader, type Party } from "@gemdex/venues";
-import { sendOnce } from "./chain-tx";
+import { MachineDown, AddressBlocked, role, trader, type OpenResult, type Party } from "@gemdex/venues";
+import { PACK_REVIEW_MS, confirmedSignature, sendOnce } from "./chain-tx";
 import { accrueCashback } from "./cashback";
 import type { Ctx } from "./ctx";
 
 type Order = typeof orders.$inferSelect;
 type User = typeof users.$inferSelect;
+
+/** Nothing is reserved or paid before a pack is generated, so an outage this long can end the order cleanly. */
+const GENERATE_GIVE_UP_MS = 10 * 60_000;
+const PACK_REVIEW = "Collector Crypt has not delivered or refunded this pack after 6 hours. It needs a manual review.";
 
 async function setStep(ctx: Ctx, order: Order, step: string, patch: Partial<typeof orders.$inferInsert> = {}) {
   await ctx.db
@@ -59,43 +63,87 @@ async function runMarketBuy(ctx: Ctx, order: Order, user: User) {
   }
 }
 
+/** A gift claim that didn't get its pack can be claimed again until the gift expires (docs/FLYWHEEL.md). */
+async function reopenGift(ctx: Ctx, giftId: string | undefined) {
+  if (giftId) await ctx.db.update(giftDraws).set({ orderId: null, state: "drawn" }).where(eq(giftDraws.id, giftId));
+}
+
 async function runGachaOpen(ctx: Ctx, order: Order, user: User) {
-  const { machine: code, turbo } = order.params as { machine: string; turbo?: boolean };
+  const { machine: code, turbo, gift } = order.params as { machine: string; turbo?: boolean; gift?: string };
   const machineRows = await ctx.db.select().from(machines).where(eq(machines.code, code));
   const machine = machineRows[0];
-  if (!machine) return finish(ctx, order, "failed", {}, "Unknown machine");
-  const payer = trader(user.id, user.tradingWallet);
+  if (!machine) {
+    await reopenGift(ctx, gift);
+    return finish(ctx, order, "failed", {}, "Unknown machine");
+  }
+  // A gift pack is paid from its reserved prize, out of the Drops wallet where the gift pool lives.
+  const payer = gift ? role("drops") : trader(user.id, user.tradingWallet);
+  const funds = gift ? "gift_reserved" : userAccount(user.id);
 
   if (order.step === "start") {
+    if (gift) {
+      const draw = (await ctx.db.select().from(giftDraws).where(eq(giftDraws.id, gift)))[0];
+      if (!draw || draw.winnerUserId !== user.id || !draw.prize || machine.price > draw.prize) {
+        await reopenGift(ctx, gift);
+        return finish(ctx, order, "failed", {}, "This gift pack's price changed. Try again later.");
+      }
+    }
+    let pack;
     try {
-      const pack = await ctx.venue.gacha.generate({ machine: code, price: machine.price, player: payer, deliverTo: user.connectedWallet, turbo: !!turbo });
-      await ctx.db.insert(ccPacks).values({ memo: pack.memo, userId: user.id, machineCode: code, price: machine.price, deliverTo: user.connectedWallet, turbo: !!turbo, raw: pack.raw });
-      return setStep(ctx, order, "pay", { memo: pack.memo });
+      pack = await ctx.venue.gacha.generate({ machine: code, price: machine.price, player: payer, deliverTo: user.connectedWallet, turbo: !!turbo && !gift });
     } catch (error) {
-      if (error instanceof MachineDown || error instanceof AddressBlocked) return finish(ctx, order, "failed", {}, error.message);
+      if (error instanceof MachineDown || error instanceof AddressBlocked) {
+        await reopenGift(ctx, gift);
+        return finish(ctx, order, "failed", {}, error.message);
+      }
+      if (Date.now() - order.createdAt.getTime() > GENERATE_GIVE_UP_MS) {
+        await reopenGift(ctx, gift);
+        return finish(ctx, order, "failed", {}, "Collector Crypt is not answering. Nothing was charged.");
+      }
       throw error;
     }
+    await ctx.db.insert(ccPacks).values({ memo: pack.memo, userId: user.id, machineCode: code, price: machine.price, deliverTo: user.connectedWallet, turbo: pack.turbo, raw: pack.raw });
+    // Only the first run past "start" may name the pack. A slow, overlapping run's pack is never paid.
+    await ctx.db
+      .update(orders)
+      .set({ memo: pack.memo, step: "pay", state: "running", nextRunAt: new Date(), leaseUntil: null, updatedAt: new Date() })
+      .where(and(eq(orders.id, order.id), eq(orders.step, "start")));
+    return;
   }
 
   const memo = order.memo!;
+  const pack = (await ctx.db.select().from(ccPacks).where(eq(ccPacks.memo, memo)))[0]!;
   if (order.step === "pay") {
-    const packRows = await ctx.db.select().from(ccPacks).where(eq(ccPacks.memo, memo));
-    const pack = packRows[0]!;
     const result = await sendOnce(ctx, "pack", memo, async () => ({ type: "ccPack", payer, amount: pack.price, memo, raw: pack.raw }));
     if (result.status === "pending") return retry(ctx, order);
-    if (result.status === "failed") return finish(ctx, order, "failed", {}, "Pack payment failed");
+    // Nothing was paid, so the hold is released. CC's bytes are never signed again once dead.
+    if (result.status === "failed") {
+      await reopenGift(ctx, gift);
+      return finish(ctx, order, "failed", {}, "Pack payment failed. Nothing was charged.");
+    }
     await ctx.db.transaction(async (tx) => {
-      await post(tx, `pack:${memo}`, "pack", [{ account: userAccount(user.id), delta: -pack.price }, { account: "cc", delta: pack.price }]);
+      await post(tx, `pack:${memo}`, "pack", [{ account: funds, delta: -pack.price }, { account: "cc", delta: pack.price }]);
       await tx.update(ccPacks).set({ state: "paid" }).where(eq(ccPacks.memo, memo));
       if (order.holdId) await closeHold(tx, order.holdId, "captured");
     });
     return setStep(ctx, order, "open");
   }
 
+  // The user has paid. Past the review deadline the order ends failed with the memo kept, so a person can
+  // finish it: a later CC refund reaches the trading wallet and is booked by deposit sync.
+  const overdue = Date.now() - pack.createdAt.getTime() > PACK_REVIEW_MS;
+
   if (order.step === "open") {
-    const opened = await ctx.venue.gacha.open(memo);
-    if (opened.status === "waiting") return retry(ctx, order);
-    if (opened.status === "dead") return setStep(ctx, order, "refund");
+    let opened: OpenResult;
+    try {
+      const signature = await confirmedSignature(ctx, "pack", memo);
+      opened = await ctx.venue.gacha.open({ memo, machine: pack.machineCode, payer, deliverTo: pack.deliverTo, turbo: pack.turbo, signature });
+    } catch (error) {
+      if (overdue) return finish(ctx, order, "failed", { memo }, `${PACK_REVIEW} ${error instanceof Error ? error.message : ""}`.trim());
+      throw error;
+    }
+    if (opened.status === "waiting") return overdue ? finish(ctx, order, "failed", { memo }, PACK_REVIEW) : retry(ctx, order);
+    if (opened.status === "refunded") return setStep(ctx, order, "refund");
     await ctx.db
       .update(ccPacks)
       .set({ state: "opened", nft: opened.nft, rarity: opened.rarity, insuredValue: opened.insuredValue, roll: opened.roll, buybackAmount: opened.turboBuyback, openedAt: new Date() })
@@ -109,20 +157,31 @@ async function runGachaOpen(ctx: Ctx, order: Order, user: User) {
       }
       if (opened.nft) {
         await tx.insert(holdings).values({
-          userId: user.id, nft: opened.nft, wallet: "connected", card, source: "gacha", cost: machine.price, insuredValue: opened.insuredValue,
+          userId: user.id, nft: opened.nft, wallet: "connected", card, source: "gacha", cost: gift ? 0 : machine.price, insuredValue: opened.insuredValue,
           buybackUntil: quote?.expiresAt ?? null, buybackAmount: quote?.amount ?? null,
         });
       }
-      await tx.insert(activity).values({ userId: user.id, kind: "pull", title: `Opened ${machine.shortName ?? machine.name}: ${String(card.name ?? "Common sold back")}`, delta: -machine.price + (opened.turboBuyback ?? 0), ref: memo });
+      await tx.insert(activity).values({
+        userId: user.id, kind: "pull", title: `${gift ? "Gift pack" : "Opened"} ${machine.shortName ?? machine.name}: ${String(card.name ?? "Common sold back")}`,
+        delta: gift ? 0 : -machine.price + (opened.turboBuyback ?? 0), ref: memo,
+      });
+      // Whatever the prize held beyond this pack's price goes back to the gift pool.
+      if (gift) {
+        const draw = (await tx.select().from(giftDraws).where(eq(giftDraws.id, gift)))[0];
+        const left = (draw?.prize ?? 0) - machine.price;
+        if (left > 0) await post(tx, `gift:${gift}:change`, "gift_change", [{ account: "gift_reserved", delta: -left }, { account: "gifts", delta: left }]);
+      }
     });
-    await accrueCashback(ctx, user, memo, machine);
+    // Cashback is for packs people pay for. A gift is already free.
+    if (!gift) await accrueCashback(ctx, user, memo, machine);
     return finish(ctx, order, "done", { memo, nft: opened.nft, rarity: opened.rarity, insuredValue: opened.insuredValue, card, turboBuyback: opened.turboBuyback, roll: opened.roll });
   }
 
   if (order.step === "refund") {
-    if (!(await ctx.venue.gacha.refunded(memo))) return retry(ctx, order, 60_000);
-    await ctx.db.transaction((tx) => post(tx, `refund:${memo}`, "pack_refund", [{ account: "cc", delta: -machine.price }, { account: userAccount(user.id), delta: machine.price }]));
-    return finish(ctx, order, "failed", {}, "The pack could not open, so it was refunded");
+    if (!(await ctx.venue.gacha.refunded(memo))) return overdue ? finish(ctx, order, "failed", { memo }, PACK_REVIEW) : retry(ctx, order, 60_000);
+    await ctx.db.transaction((tx) => post(tx, `refund:${memo}`, "pack_refund", [{ account: "cc", delta: -machine.price }, { account: funds, delta: machine.price }]));
+    await reopenGift(ctx, gift);
+    return finish(ctx, order, "failed", {}, gift ? "The gift pack could not open. You can claim it again." : "The pack could not open, so it was refunded");
   }
 }
 
@@ -135,6 +194,8 @@ async function ownedHolding(ctx: Ctx, order: Order) {
 async function runBuyback(ctx: Ctx, order: Order, user: User) {
   const holding = await ownedHolding(ctx, order);
   if (!holding || holding.status !== "held") return finish(ctx, order, "failed", {}, "You no longer hold this card");
+  // Only the trading wallet can be signed for here. A card in the connected wallet is sold from the user's own wallet.
+  if (holding.wallet !== "trading") return finish(ctx, order, "failed", {}, "This card is in your connected wallet. Sell it back from there.");
   const seller = trader(user.id, user.tradingWallet);
   if (!order.result?.amount) {
     const quote = await ctx.venue.gacha.buybackQuote(holding.nft);
@@ -144,9 +205,9 @@ async function runBuyback(ctx: Ctx, order: Order, user: User) {
     const built = await ctx.venue.gacha.buildBuyback({ owner: seller, nft: holding.nft, recipient: seller });
     await ctx.db.update(orders).set({ result: { amount: built.amount } }).where(eq(orders.id, order.id));
     return { type: "ccBuyback", owner: seller, recipient: seller, nft: holding.nft, amount: built.amount, raw: built.raw };
-  });
+  }, { maxAttempts: 3 });
   if (result.status === "pending") return retry(ctx, order);
-  if (result.status === "failed") return finish(ctx, order, "failed", {}, "Buyback failed on-chain");
+  if (result.status === "failed") return finish(ctx, order, "failed", {}, result.reason ? `Buyback refused: ${result.reason}` : "Buyback failed on-chain");
   const saved = await ctx.db.select({ result: orders.result }).from(orders).where(eq(orders.id, order.id));
   const amount = Number(saved[0]?.result?.amount ?? 0);
   await ctx.db.transaction(async (tx) => {

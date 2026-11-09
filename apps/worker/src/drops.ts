@@ -1,5 +1,5 @@
 import { splitSale,
-  BRAND, BUYBACK_SAFETY_SEC, BUYBACK_WINDOW_SEC, MAX_PACK_PAY_ATTEMPTS, assertTransition, blendedBurn, intervalSeconds,
+  BRAND, BUYBACK_SAFETY_SEC, BUYBACK_WINDOW_SEC, MAX_PACK_PAY_ATTEMPTS, assertTransition, blendedBurn, intervalSeconds, ladderMix,
   pauseReason, pickMachine, publicDrop, pulseView, usd, type DropState, type MachineEcon, type PauseReason,
 } from "@gemdex/core";
 import {
@@ -470,6 +470,23 @@ async function rolling24h(ctx: Ctx) {
   return { spent: Math.max(0, Number(rows[0]?.spent ?? 0)), income: Number(rows[0]?.income ?? 0) };
 }
 
+/**
+ * Pack money promised but not yet paid out of the Drops pool: revealed drops waiting to buy their pack, and sealed
+ * drops that buy theirs when someone wins. Paid packs have already left the pool's balance.
+ */
+export async function promisedToPacks(ctx: Ctx): Promise<number> {
+  const rows = await ctx.sql<{ total: string }[]>`
+    select coalesce(sum(pack_price), 0) as total from drops
+    where (kind = 'revealed' and state = 'PLANNED')
+       or (kind = 'hidden' and state in ('LIVE', 'CLAIMED', 'QUOTED', 'DEBITING', 'PACK_PAYING'))`;
+  return Number(rows[0]?.total ?? 0);
+}
+
+async function lastPackPrice(ctx: Ctx): Promise<number | null> {
+  const rows = await ctx.db.select({ price: drops.packPrice }).from(drops).orderBy(sql`${drops.createdAt} desc`).limit(1);
+  return rows[0]?.price ?? null;
+}
+
 export async function tickScheduler(ctx: Ctx): Promise<DropsStatus> {
   const [settings, ops, rows, saved] = await Promise.all([
     getSetting(ctx.db, "drops"),
@@ -478,14 +495,18 @@ export async function tickScheduler(ctx: Ctx): Promise<DropsStatus> {
     loadJson<DropsStatus>(ctx.db, "dropsStatus"),
   ]);
   const econ = rows.map(toEcon);
-  const { spent, income } = await rolling24h(ctx);
-  const dropsBalance = await balanceOf(ctx.db, "drops");
+  const [{ spent, income }, dropsBalance, promised, lastPrice] = await Promise.all([rolling24h(ctx), balanceOf(ctx.db, "drops"), promisedToPacks(ctx), lastPackPrice(ctx)]);
   const paused = pauseReason({ enabled: settings.enabled, killSwitch: ops.killSwitch, reconcileHold: ops.reconcileHold, dropsBalance, spent24h: spent, settings });
 
+  // Only free money decides which sizes can open, so packs already promised can't be paid for twice and the pool
+  // never goes under the floor. A bigger pool unlocks bigger sizes, mixed in by weight.
+  const free = dropsBalance - settings.walletFloor - promised;
+  const mix = ladderMix(settings.ladder, econ, free, lastPrice);
+
   // Rolling income starts at zero, so a small first fee run must not stretch the gap to days.
-  // The fallback sets the minimum pace, and the wallet floor and daily cap still bound spend.
+  // The fallback sets the minimum pace, and the ladder and daily cap still bound spend.
   const budgetPerDay = Math.max(income, settings.budgetPerDayFallback);
-  const burnPerDrop = blendedBurn(settings.machineMix, econ, settings);
+  const burnPerDrop = blendedBurn(mix, econ, settings);
   const interval = intervalSeconds(burnPerDrop, budgetPerDay, settings.intervalFloorSec);
   const status: DropsStatus = {
     nextDropAt: saved?.nextDropAt ?? null,
@@ -502,8 +523,12 @@ export async function tickScheduler(ctx: Ctx): Promise<DropsStatus> {
   const soonest = Date.now() + interval * 1000;
   if (status.nextDropAt && Number.isFinite(soonest) && new Date(status.nextDropAt).getTime() > soonest) status.nextDropAt = new Date(soonest).toISOString();
   const due = !status.nextDropAt || new Date(status.nextDropAt).getTime() <= Date.now();
+  if (!status.pausedFor && mix.length === 0) {
+    // Nothing fits: either the pool can't cover the smallest open size yet, or no size has a machine that can sell.
+    status.pausedFor = ladderMix(settings.ladder, econ, Number.MAX_SAFE_INTEGER, null).length > 0 ? "wallet_floor" : "no_machines";
+  }
   if (!status.pausedFor && due) {
-    const machine = pickMachine(settings.machineMix, econ, ctx.rng());
+    const machine = pickMachine(mix, econ, ctx.rng());
     if (!machine) status.pausedFor = "no_machines";
     else {
       await createDrop(ctx, machine, settings);
@@ -517,8 +542,9 @@ export async function tickScheduler(ctx: Ctx): Promise<DropsStatus> {
 
 export async function createDrop(ctx: Ctx, machine: MachineEcon, settings: Awaited<ReturnType<typeof getSetting<"drops">>>) {
   // A sealed pack promises less than any card it could hold, so its price stays under the machine's lowest value.
+  // Its price also can't pass maxPrice, so a pack that costs more is always shown: sealed, it would lose the difference.
   const hiddenCap = Math.min(settings.maxPrice, machine.commonFloor - settings.ivMargin);
-  const hidden = ctx.rng() < settings.hiddenShare && hiddenCap >= settings.minPrice;
+  const hidden = machine.price <= settings.maxPrice && ctx.rng() < settings.hiddenShare && hiddenCap >= settings.minPrice;
   const base = { machineCode: machine.code, packPrice: machine.price, commonFloor: machine.commonFloor };
   if (hidden) {
     const now = new Date();

@@ -1,6 +1,6 @@
 import { ofBps, usd, type Micros } from "./money";
 import { PATH_MIX } from "./pricepath";
-import type { CashbackSettings, DropSettings, MachineWeight } from "./settings";
+import type { CashbackSettings, DropSettings, MachineWeight, PackTier } from "./settings";
 
 export interface MachineEcon {
   code: string;
@@ -78,6 +78,25 @@ export function pauseReason(input: PauseInput): PauseReason | null {
   if (input.dropsBalance < input.settings.walletFloor) return "wallet_floor";
   if (input.spent24h >= input.settings.dailySpendCap) return "daily_cap";
   return null;
+}
+
+/** Packs above this never come twice in a row, so a big pool still sees a mix rather than a run of big ones. */
+export const BIG_PACK = usd(100);
+
+const canSell = (machine: MachineEcon | undefined): machine is MachineEcon => !!machine && machine.open && machine.stock > 0;
+
+/**
+ * The machines Pulse may open now, weighted for pickMachine. A size counts when it is on, the free money has
+ * reached its unlock point and covers its price, and one of its machines at that price can sell. Its weight is
+ * shared among those machines. A big size that just dropped sits out one turn, unless nothing else is open.
+ */
+export function ladderMix(ladder: PackTier[], machines: MachineEcon[], free: Micros, lastPrice: Micros | null): MachineWeight[] {
+  const open = ladder
+    .filter((tier) => tier.enabled && tier.weight > 0 && free >= tier.unlockAt && free >= tier.price)
+    .map((tier) => ({ tier, usable: tier.machines.map((code) => machines.find((m) => m.code === code)).filter(canSell).filter((m) => m.price === tier.price) }))
+    .filter((x) => x.usable.length > 0);
+  const others = open.filter((x) => !(lastPrice !== null && lastPrice > BIG_PACK && x.tier.price === lastPrice));
+  return (others.length > 0 ? others : open).flatMap(({ tier, usable }) => usable.map((m) => ({ code: m.code, weight: tier.weight / usable.length })));
 }
 
 /** Weighted random machine among those that can currently sell. */

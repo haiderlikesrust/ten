@@ -6,7 +6,6 @@ export const BUY_SIZES = [
   { value: "s", label: "S" },
   { value: "m", label: "M" },
   { value: "l", label: "L" },
-  { value: "xl", label: "XL" },
 ] as const;
 
 export type BuySize = (typeof BUY_SIZES)[number]["value"];
@@ -24,7 +23,9 @@ export const useBuySize = create<BuySizeStore>((set) => ({
   load: () => {
     try {
       const saved = localStorage.getItem(KEY);
-      if (BUY_SIZES.some((item) => item.value === saved)) set({ size: saved as BuySize });
+      // XL was removed; anyone who had it gets the biggest size left.
+      if (saved === "xl") set({ size: "l" });
+      else if (BUY_SIZES.some((item) => item.value === saved)) set({ size: saved as BuySize });
     } catch {
       // Starts at the default size.
     }
@@ -40,4 +41,4 @@ export const useBuySize = create<BuySizeStore>((set) => ({
 }));
 
 /** Large sizes stand at the end of a row as a tall block, as high as the row itself. */
-export const isTallBuy = (size: BuySize): boolean => size === "l" || size === "xl";
+export const isTallBuy = (size: BuySize): boolean => size === "l";

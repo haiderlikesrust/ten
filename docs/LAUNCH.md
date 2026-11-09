@@ -81,7 +81,7 @@ Use a new database and a separate Privy app.
 
 - [ ] `GEMDEX_MODE=mainnet`, plus `SOLANA_RPC_URL`, `SESSION_SECRET`, `ADMIN_WALLETS`, `JUPITER_API_KEY`, `CC_API_KEY`, `NEXT_PUBLIC_SOLANA_RPC`.
 - [ ] `ALLOW_MAINNET=I_UNDERSTAND_THIS_MOVES_REAL_MONEY`. Nothing starts without it.
-- [ ] Set tight limits in Admin first: daily cap $50, one cheap machine, wallet floor near zero.
+- [ ] Set tight limits in Admin first: daily cap $50, and only the $25 pack size switched on under Pack sizes. Each size opens once the Pulse pool has enough free money for it ($25 at $25, $500 at $3,000 by default), and open sizes mix by weight.
 - [ ] An admin presses **Arm** in Admin (`POST /admin/arm`). The arm lasts 2 hours, then signing stops by itself; **Renew arm** restarts the 2 hours. One admin is enough, so guard every wallet listed in `ADMIN_WALLETS`.
 
 **Canary, in order, watching Admin the whole time:**
@@ -120,7 +120,7 @@ A public paper demo must set `PAPER_OPEN_ADMIN=false`, or anyone can open Admin.
 
 ## Known limits
 
-- Bots will win many drops. You chose first click. The levers are the win cooldown, machine mix and price band in Admin.
+- Bots will win many drops. You chose first click. The levers are the win cooldown (10s by default), the pack sizes and the price band in Admin.
 - A revealed drop priced below the buyback value is instant profit for whoever wins it. See the plan for the numbers.
 - New listings can lag up to 30s, because CC caches that endpoint. A Helius webhook on the marketplace program would close the gap.
 - Sales history starts from your launch date. CC publishes none.

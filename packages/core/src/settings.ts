@@ -5,6 +5,24 @@ export interface MachineWeight {
   weight: number;
 }
 
+/**
+ * One pack size on Pulse's ladder. A size opens once the Drops pool has enough free money for it, and the open
+ * sizes are mixed by weight, so a bigger pool adds bigger packs without crowding out the small ones.
+ * Admin only: users never see which sizes are off or locked.
+ */
+export interface PackTier {
+  /** Pack price. Only machines at exactly this price are used. */
+  price: Micros;
+  /** Free money the Drops pool needs before this size opens. */
+  unlockAt: Micros;
+  /** How often this size comes up next to the other open sizes. 0 never picks it. */
+  weight: number;
+  /** Off means Pulse never opens this size. */
+  enabled: boolean;
+  /** Collector Crypt machine codes at this price. One that can sell is picked at random. */
+  machines: string[];
+}
+
 export interface DropSettings {
   enabled: boolean;
   /** The lowest price any card can reach, and the balance needed to buy one. */
@@ -33,11 +51,12 @@ export interface DropSettings {
   winCooldownSec: number;
   /** Drops pause when spend in the last 24h reaches this. */
   dailySpendCap: Micros;
-  /** Drops pause when the Drops wallet falls under this. */
+  /** Money kept in the Drops pool that no pack may spend. */
   walletFloor: Micros;
   /** Budget used for pacing while there is no fee history yet. */
   budgetPerDayFallback: Micros;
-  machineMix: MachineWeight[];
+  /** The pack sizes Pulse opens, smallest first. */
+  ladder: PackTier[];
 }
 
 export const DEFAULT_DROP_SETTINGS: DropSettings = {
@@ -55,18 +74,21 @@ export const DEFAULT_DROP_SETTINGS: DropSettings = {
   newPullSec: 60,
   lockedHoldSec: 1800,
   relists: 0,
-  winCooldownSec: 300,
+  winCooldownSec: 10,
   dailySpendCap: usd(2_500),
-  walletFloor: usd(100),
+  walletFloor: 0,
   budgetPerDayFallback: usd(1_000),
-  machineMix: [
-    { code: "pokemon_25", weight: 60 },
-    { code: "pokemon_50", weight: 18 },
-    { code: "onepiece_50", weight: 10 },
-    { code: "dragonball_50", weight: 6 },
-    { code: "pokemon_100", weight: 6 },
+  ladder: [
+    { price: usd(25), unlockAt: usd(25), weight: 40, enabled: true, machines: ["pokemon_25"] },
+    { price: usd(50), unlockAt: usd(400), weight: 25, enabled: true, machines: ["pokemon_50", "onepiece_50", "dragonball_50"] },
+    { price: usd(100), unlockAt: usd(800), weight: 20, enabled: true, machines: ["pokemon_100"] },
+    { price: usd(250), unlockAt: usd(2_000), weight: 10, enabled: true, machines: ["pokemon_250", "onepiece_250"] },
+    { price: usd(500), unlockAt: usd(3_000), weight: 5, enabled: true, machines: ["pokemon_500"] },
   ],
 };
+
+/** Every machine the ladder can use, for loading card pools and choosing gift packs. */
+export const ladderMachines = (ladder: PackTier[]): string[] => [...new Set(ladder.flatMap((tier) => tier.machines))];
 
 export interface FeeSettings {
   cashbackBps: number;

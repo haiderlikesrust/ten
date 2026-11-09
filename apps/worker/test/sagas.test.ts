@@ -8,7 +8,7 @@ import {
 import { CardFrozen, CcRead, createPaperVenue, role, type Fault, type PaperVenue } from "@gemdex/venues";
 import { claimDrop } from "../../gateway/src/claim";
 import {
-  createDrop, ingestListings, publicDrop, reconcile, tickBalances, tickCashback, tickDrops, tickFees, tickOrders, tickScheduler, toEcon, type Ctx,
+  createDrop, ingestListings, promisedToPacks, publicDrop, reconcile, tickBalances, tickCashback, tickDrops, tickFees, tickOrders, tickScheduler, toEcon, type Ctx,
 } from "../src/lib";
 import { sendOnce } from "../src/chain-tx";
 import { createTestDb, type TestDb } from "../../../tools/testdb";
@@ -770,7 +770,7 @@ describe("pause and reconcile", () => {
     const ctx = makeCtx(venue);
     await fund(venue, "drops", usd(5000));
     // Sale money goes to buyback, so packs bought by earlier tests count fully against today's cap.
-    await setSetting(t.db, "drops", { machineMix: [{ code: "pokemon_25", weight: 1 }], dailySpendCap: usd(1_000_000) });
+    await setSetting(t.db, "drops", { ladder: [{ price: usd(25), unlockAt: usd(25), weight: 1, enabled: true, machines: ["pokemon_25"] }], dailySpendCap: usd(1_000_000) });
     await setSetting(t.db, "ops", { killSwitch: true });
     const before = await t.sql`select count(*)::int as n from drops`;
     expect((await tickScheduler(ctx)).pausedFor).toBe("kill_switch");
@@ -782,7 +782,44 @@ describe("pause and reconcile", () => {
     expect(status.pausedFor).toBeNull();
     expect(status.intervalSec).toBeGreaterThanOrEqual(30);
     expect((await t.sql`select count(*)::int as n from drops`)[0]!.n).toBe(before[0]!.n + 1);
-    await setSetting(t.db, "drops", { machineMix: DEFAULT_DROP_SETTINGS.machineMix, dailySpendCap: DEFAULT_DROP_SETTINGS.dailySpendCap });
+    await setSetting(t.db, "drops", { ladder: DEFAULT_DROP_SETTINGS.ladder, dailySpendCap: DEFAULT_DROP_SETTINGS.dailySpendCap });
+  });
+
+  it("opens only the pack sizes the free money covers, pauses below the smallest, and never seals a big pack", async () => {
+    const ctx = makeCtx(createPaperVenue(t.db));
+    const count = async () => (await t.sql`select count(*)::int as n from drops`)[0]!.n as number;
+    // Sets the floor so exactly this much of the pool is free.
+    const freeAt = async (dollars: number) => {
+      const floor = (await balanceOf(t.db, "drops")) - (await promisedToPacks(ctx)) - usd(dollars);
+      await setSetting(t.db, "drops", { ladder: DEFAULT_DROP_SETTINGS.ladder, walletFloor: floor, dailySpendCap: usd(1_000_000), hiddenShare: 0 });
+      await t.sql`delete from app_settings where key = 'dropsStatus'`;
+    };
+    try {
+      await freeAt(30);
+      const before = await count();
+      expect((await tickScheduler(ctx)).pausedFor).toBeNull();
+      const made = (await t.db.select().from(drops).orderBy(sql`${drops.createdAt} desc`).limit(1))[0]!;
+      expect(await count()).toBe(before + 1);
+      expect(made.packPrice).toBe(usd(25));
+
+      // The new drop's pack isn't paid yet, so its $25 is already promised: $10 free can't cover another.
+      await freeAt(10);
+      expect((await tickScheduler(ctx)).pausedFor).toBe("wallet_floor");
+      expect(await count()).toBe(before + 1);
+
+      // Every size switched off reads as no machines, never as a reason that names Admin.
+      await setSetting(t.db, "drops", { ladder: DEFAULT_DROP_SETTINGS.ladder.map((tier) => ({ ...tier, enabled: false })), walletFloor: 0 });
+      expect((await tickScheduler(ctx)).pausedFor).toBe("no_machines");
+      await t.db.delete(drops).where(eq(drops.id, made.id));
+
+      // A $500 pack sealed would sell for at most the sealed ceiling, so it is always shown.
+      const big = { ...toEcon((await t.db.select().from(machines).where(eq(machines.code, "pokemon_25")))[0]!), code: "pokemon_500", price: usd(500) };
+      const shown = await createDrop(ctx, big, { ...DEFAULT_DROP_SETTINGS, hiddenShare: 1 });
+      expect(shown.kind).toBe("revealed");
+      await t.db.delete(drops).where(eq(drops.id, shown.id));
+    } finally {
+      await setSetting(t.db, "drops", { ladder: DEFAULT_DROP_SETTINGS.ladder, walletFloor: DEFAULT_DROP_SETTINGS.walletFloor, dailySpendCap: DEFAULT_DROP_SETTINGS.dailySpendCap, hiddenShare: DEFAULT_DROP_SETTINGS.hiddenShare });
+    }
   });
 });
 

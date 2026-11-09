@@ -66,13 +66,11 @@ const ROW_BUY: Record<BuySize, { box: string; label: string; price?: string }> =
   s: { box: "h-7 gap-1.5 px-2.5", label: "text-[12px]" },
   m: { box: "h-9 gap-1.5 px-3.5", label: "text-[14px]" },
   l: { box: "w-full flex-col gap-1.5", label: "text-[13px]", price: "text-[17px]" },
-  xl: { box: "w-full flex-col gap-2", label: "text-[16px]", price: "text-[22px]" },
 };
 
-/** XL rows grow with the button, so the card keeps up with it. */
-const THUMB: Record<BuySize, number> = { s: 52, m: 52, l: 52, xl: 72 };
+const THUMB: Record<BuySize, number> = { s: 52, m: 52, l: 52 };
 
-const TALL_COLUMN: Record<BuySize, string> = { s: "", m: "", l: "w-[104px]", xl: "w-[34%] min-w-[124px] max-w-[176px]" };
+const TALL_COLUMN: Record<BuySize, string> = { s: "", m: "", l: "w-[104px]" };
 
 /** The one action on Pulse. Whoever gets here first pays this price and gets the card. */
 export function BuyButton({ card, size = "small" }: { card: PulseCard; size?: "small" | "big" }) {
@@ -92,7 +90,7 @@ export function BuyButton({ card, size = "small" }: { card: PulseCard; size?: "s
   }
   const look = ROW_BUY[rowSize];
   return (
-    <button type="button" onClick={buy} aria-label={`Buy ${cardName(card)} for ${money(card.price)}`} className={`flex items-center justify-center px-cut bg-volt text-[var(--on-volt)] transition hover:brightness-105 active:scale-[0.97] ${look.box}`}>
+    <button type="button" onClick={buy} aria-label={`Buy ${cardName(card)} for ${money(card.price)}`} className={`flex min-h-11 items-center justify-center px-cut bg-volt text-[var(--on-volt)] transition hover:brightness-105 active:scale-[0.97] sm:min-h-0 ${look.box}`}>
       <span className="flex items-center gap-1.5">{BOLT} <span className={`pixel uppercase leading-none ${look.label}`}>Buy</span></span>
       {look.price ? <span className={`num font-bold leading-none ${look.price}`}>{money(card.price, true)}</span> : null}
     </button>
@@ -120,19 +118,21 @@ export const PulseRow = memo(function PulseRow({ id }: { id: string }) {
   const pct = <PctBadge pct={changePct(card.price, card.openPrice)} />;
   return (
     <Link href={`/live/${card.id}`} className={`tile flex overflow-hidden ${rarityWash(card.rarity)}`}>
-      <div className="flex min-w-0 flex-1 gap-2.5 p-2 pb-2.5">
+      <div className="flex min-w-0 flex-1 gap-2.5 p-2.5">
         {hidden ? <SealedThumb size={THUMB[buySize]} /> : <CardThumb src={card.card?.image} alt={name} size={THUMB[buySize]} zoom />}
         <div className="flex min-w-0 flex-1 flex-col justify-between gap-1">
-          <div className="flex items-baseline justify-between gap-3">
-            <div className="min-w-0 truncate text-[14px] font-semibold leading-snug">{name}</div>
-            {tall ? pct : <div className="num shrink-0 text-[15px] font-semibold leading-snug">{money(card.price, true)}</div>}
+          <div className="flex items-baseline justify-between gap-2">
+            <div className="min-w-0 truncate text-[15px] font-semibold leading-snug">{name}</div>
+            <div className="flex shrink-0 items-baseline gap-2">
+              {tall ? null : <div className="num text-[16px] font-semibold leading-snug">{money(card.price, true)}</div>}
+              {pct}
+            </div>
           </div>
           <div className="flex items-center justify-between gap-2">
             <div className="flex min-w-0 items-center gap-1 overflow-hidden">
               {hidden ? <Pill tone="warn">Hidden</Pill> : <Rarity rarity={card.rarity} />}
               <Grade grader={card.card?.grader} grade={card.card?.grade} />
             </div>
-            {tall ? null : pct}
           </div>
           <div className={`flex items-center gap-x-2.5 gap-y-1 ${tall ? "flex-wrap" : ""}`}>
             <Sparkline card={card} now={now} />
@@ -164,12 +164,12 @@ export function FinalRow({ card }: { card: PulseCard }) {
   const tall = isTallBuy(buySize) && !sold;
   return (
     <Link href={`/live/${card.id}`} className={`tile flex ${rarityWash(card.rarity)}`}>
-      <div className="flex min-w-0 flex-1 gap-2.5 p-2">
+      <div className="flex min-w-0 flex-1 gap-2.5 p-2.5">
       {hidden ? <SealedThumb size={THUMB[buySize]} /> : <CardThumb src={card.card?.image} alt={name} size={THUMB[buySize]} zoom />}
       <div className="flex min-w-0 flex-1 flex-col justify-between gap-1">
         <div className="flex items-baseline justify-between gap-3">
-          <div className="min-w-0 truncate text-[14px] font-semibold leading-snug">{name}</div>
-          {tall ? null : <div className="num shrink-0 text-[15px] font-semibold leading-snug">{money(card.price, true)}</div>}
+          <div className="min-w-0 truncate text-[15px] font-semibold leading-snug">{name}</div>
+          {tall ? null : <div className="num shrink-0 text-[16px] font-semibold leading-snug">{money(card.price, true)}</div>}
         </div>
         <div className="flex items-center justify-between gap-2">
           {sold ? (

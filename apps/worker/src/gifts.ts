@@ -2,7 +2,7 @@
 // from a Solana block that didn't exist yet, so nobody, the team included, can pick the winner.
 import { createHash, randomBytes } from "node:crypto";
 import {
-  blasterWeight, giftEntriesText, giftGroupOrder, giftPrize, giftSlot, holderWeight, pickGiftWinner,
+  blasterWeight, giftEntriesText, giftGroupOrder, giftPrize, giftSlot, holderWeight, ladderMachines, pickGiftWinner,
   type FlywheelSettings, type GiftEntry, type GiftGroup, type Micros,
 } from "@gemdex/core";
 import { and, balanceOf, emit, eq, getSetting, giftDraws, gte, holderStreaks, inArray, isNotNull, isNull, lt, machines, post, users, type GiftDraw } from "@gemdex/db";
@@ -100,7 +100,7 @@ const ENTRIES: Record<GiftGroup, typeof activeEntries> = { active: activeEntries
 /** An open pack machine at the prize, or the next tier down. Prefers the machines Pulse already uses. */
 async function giftMachine(ctx: Ctx, prize: Micros, tiers: readonly Micros[]): Promise<{ code: string; price: Micros } | null> {
   const open = await ctx.db.select({ code: machines.code, price: machines.price }).from(machines).where(eq(machines.isOpen, true));
-  const preferred = new Set((await getSetting(ctx.db, "drops")).machineMix.map((m) => m.code));
+  const preferred = new Set(ladderMachines((await getSetting(ctx.db, "drops")).ladder.filter((tier) => tier.enabled)));
   for (const tier of [...tiers].sort((a, b) => b - a).filter((t) => t <= prize)) {
     const fits = open.filter((m) => m.price === tier).sort((a, b) => Number(preferred.has(b.code)) - Number(preferred.has(a.code)));
     if (fits[0]) return fits[0];

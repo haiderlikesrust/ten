@@ -1,4 +1,4 @@
-import { DEFAULT_DROP_SETTINGS, usd } from "@gemdex/core";
+import { DEFAULT_DROP_SETTINGS, ladderMachines, usd } from "@gemdex/core";
 import { balanceOf, connect, getSetting, loadJson, post, runMigrations, saveJson, setSetting, sql, type Database } from "@gemdex/db";
 import { CcRead, createPaperVenue, type PaperVenue } from "@gemdex/venues";
 import { tickBalances } from "./balances";
@@ -131,6 +131,12 @@ async function main() {
   log(`starting in ${mode} mode`);
 
   if (venue.mode === "paper") await seedPaperTreasury(ctx, venue as PaperVenue);
+  // Saved settings outrank new defaults, so these founder decisions (2026-11-09) are applied once to a database that
+  // already saved the old values: a 10s win cooldown, and no floor, so a $25 pack opens with $25 in the pool.
+  if (!(await loadJson(ctx.db, "dropDefaults20261109"))) {
+    await setSetting(ctx.db, "drops", { winCooldownSec: 10, walletFloor: 0 });
+    await saveJson(ctx.db, "dropDefaults20261109", true);
+  }
   // Admin shows these, so admins know where to send USDC when funding Pulse or cashback.
   await saveJson(ctx.db, "treasuryWallets", { drops: venue.address("drops"), cashback: venue.address("cashback"), feePayer: venue.address("feePayer") });
 
@@ -162,9 +168,9 @@ async function main() {
   void (async () => {
     const added = await ingestListings(ctx, { pages: 5, announce: false }).catch(() => 0);
     log(`backfilled ${added} listings`);
-    const codes = (await getSetting(ctx.db, "drops")).machineMix.map((m) => m.code);
+    const codes = ladderMachines((await getSetting(ctx.db, "drops")).ladder);
     if (venue.mode === "paper") {
-      await ingestPool(ctx, [...new Set([...codes, ...DEFAULT_DROP_SETTINGS.machineMix.map((m) => m.code)])]);
+      await ingestPool(ctx, [...new Set([...codes, ...ladderMachines(DEFAULT_DROP_SETTINGS.ladder)])]);
       log("card pool ready");
     }
     await recordPricePoints(ctx).catch(() => {});

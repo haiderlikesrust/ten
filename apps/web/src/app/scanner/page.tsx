@@ -47,7 +47,7 @@ function DealTile({ listing }: { listing: Listing }) {
 }
 
 /** Rows grow with the Buy button, so the card keeps up with it. */
-const TAPE_THUMB: Record<BuySize, number> = { s: 24, m: 24, l: 40, xl: 60 };
+const TAPE_THUMB: Record<BuySize, number> = { s: 24, m: 24, l: 40 };
 
 const TAPE = "grid-cols-[minmax(0,1fr)_auto] md:grid-cols-[40px_minmax(0,1fr)_70px_84px_84px_64px_auto]";
 

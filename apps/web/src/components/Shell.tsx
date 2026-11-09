@@ -35,7 +35,7 @@ const NAV: NavItem[] = [
   { href: "/", label: "Pulse", icon: "pulse", phone: true },
   { href: "/scanner", label: "Scanner", icon: "scanner", phone: true },
   { href: "/market", label: "Market", icon: "market", phone: true },
-  { href: "/gacha", label: "Gacha", icon: "pack", phone: true },
+  { href: "/gacha", label: "Gacha", icon: "pack" },
   { href: "/portfolio", label: "Portfolio", icon: "slab", phone: true },
   { href: "/tracker", label: "Tracker", icon: "eye" },
   { href: "/rewards", label: "Rewards", icon: "star" },
@@ -76,7 +76,7 @@ function usePopover() {
   return { open, setOpen, box };
 }
 
-const menuItem = "flex h-9 w-full items-center gap-2.5 px-cut px-2.5 text-left text-[13.5px] font-medium text-mute transition-colors hover:bg-bone/[0.07] hover:text-bone";
+const menuItem = "flex h-9 min-h-11 w-full items-center gap-2.5 px-cut px-2.5 text-left text-[14px] font-medium text-mute transition-colors hover:bg-bone/[0.07] hover:text-bone sm:min-h-0";
 
 /**
  * The page menu, built like a handheld game's. A cursor marks the current page and hops to
@@ -141,20 +141,20 @@ function PhoneNav({ onMore }: { onMore: () => void }) {
   const tab = "relative flex h-full min-w-0 flex-1 flex-col items-center justify-center gap-1";
   return (
     <div className="shrink-0 px-1.5 pb-[calc(env(safe-area-inset-bottom)+6px)] pt-1 sm:hidden">
-      <nav aria-label="Main" className="px-box flex h-[54px] items-stretch p-[3px]">
+      <nav aria-label="Main" className="px-box flex h-[58px] items-stretch p-[3px]">
         {PHONE_TABS.map((item) => {
           const active = isActive(item.href);
           return (
             <Link key={item.href} href={item.href} aria-current={active ? "page" : undefined} className={`${tab} ${active ? "px-box px-well text-gold" : "text-faint"}`}>
               <PixelIcon name={item.icon} />
-              <span className="pixel max-w-full truncate text-[9px] uppercase leading-none">{item.label}</span>
+              <span className="pixel max-w-full truncate text-[11px] uppercase leading-none">{item.label}</span>
               {item.href === "/" && count > 0 ? <span className="pixel absolute left-[calc(50%+10px)] top-1 text-[10px] leading-none text-gold">{count}</span> : null}
             </Link>
           );
         })}
         <button type="button" onClick={onMore} className={`${tab} text-faint`}>
           <PixelIcon name="menu" />
-          <span className="pixel text-[9px] uppercase leading-none">More</span>
+          <span className="pixel text-[11px] uppercase leading-none">More</span>
         </button>
       </nav>
     </div>
@@ -232,7 +232,7 @@ function AccountMenu() {
 
   if (!me) {
     return (
-      <button type="button" onClick={() => setConnectOpen(true)} className="px-box mr-0.5 flex h-8 shrink-0 items-center px-3 text-[var(--on-volt)] transition hover:brightness-105 active:translate-y-px [--px-fill:var(--volt)] [--px-line:var(--volt)] [--s:2px]">
+      <button type="button" onClick={() => setConnectOpen(true)} className="px-box mr-0.5 flex h-8 min-h-11 shrink-0 items-center px-3 text-[var(--on-volt)] transition hover:brightness-105 active:translate-y-px [--px-fill:var(--volt)] [--px-line:var(--volt)] [--s:2px] sm:min-h-0">
         <span className="pixel text-[13px] uppercase leading-none">Connect</span>
       </button>
     );
@@ -244,7 +244,7 @@ function AccountMenu() {
       <Link href="/wallet" title="Add funds" aria-label="Add funds" className="hidden h-8 w-8 items-center justify-center text-faint transition-colors hover:text-gold md:flex">
         <PixelIcon name="plus" scale={1.5} />
       </Link>
-      <button type="button" aria-haspopup="menu" aria-expanded={open} aria-label="Account menu" onClick={() => setOpen((v) => !v)} className="transition-opacity hover:opacity-80">
+      <button type="button" aria-haspopup="menu" aria-expanded={open} aria-label="Account menu" onClick={() => setOpen((v) => !v)} className="flex h-11 w-11 items-center justify-center transition-opacity hover:opacity-80 sm:h-8 sm:w-8">
         <Avatar handle={me.handle} />
       </button>
       {open ? (

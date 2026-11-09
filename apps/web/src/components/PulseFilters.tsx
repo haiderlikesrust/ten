@@ -13,7 +13,7 @@ const STATUS_BAR = 60;
 
 function Chip({ active, onClick, children }: { active: boolean; onClick: () => void; children: ReactNode }) {
   return (
-    <button type="button" aria-pressed={active} onClick={onClick} className={`h-7 shrink-0 px-cut px-2.5 text-[12.5px] font-medium capitalize transition-colors ${active ? "bg-bone text-ink" : "bg-raised text-mute hover:bg-raised-2 hover:text-bone"}`}>
+    <button type="button" aria-pressed={active} onClick={onClick} className={`h-7 min-h-11 shrink-0 px-cut px-2.5 text-[13px] font-medium capitalize transition-colors sm:min-h-0 ${active ? "bg-bone text-ink" : "bg-raised text-mute hover:bg-raised-2 hover:text-bone"}`}>
       {children}
     </button>
   );
@@ -140,7 +140,7 @@ export function ColumnFilter({ column, title, cards, final }: { column: string; 
           if (box.current) setRoom(window.innerHeight - box.current.getBoundingClientRect().bottom - STATUS_BAR);
           setOpen((v) => !v);
         }}
-        className={`flex h-8 items-center gap-1 px-cut px-2 text-[12.5px] font-medium transition-colors ${open || count ? "bg-volt/15 text-gold" : "text-faint hover:bg-bone/[0.07] hover:text-bone"}`}
+        className={`flex h-8 min-h-11 min-w-11 items-center justify-center gap-1 px-cut px-2 text-[13px] font-medium transition-colors sm:min-h-0 sm:min-w-0 ${open || count ? "bg-volt/15 text-gold" : "text-faint hover:bg-bone/[0.07] hover:text-bone"}`}
       >
         <SlidersHorizontal size={15} aria-hidden="true" />
         {count ? <span className="num">{count}</span> : null}
@@ -149,7 +149,7 @@ export function ColumnFilter({ column, title, cards, final }: { column: string; 
         <div role="dialog" aria-label={`Filter ${title}`} style={{ maxHeight: room }} className="sheet slab absolute right-0 top-[calc(100%+6px)] z-30 flex w-[320px] flex-col [--px-line:var(--line-strong)]">
           <div className="flex h-10 shrink-0 items-center justify-between pl-3.5 pr-1.5">
             <span className="pixel truncate text-[13px] uppercase leading-none">Filter {title}</span>
-            <button type="button" aria-label="Close filters" onClick={() => setOpen(false)} className="flex h-8 w-8 items-center justify-center px-cut text-faint hover:bg-bone/[0.07] hover:text-bone"><X size={16} aria-hidden="true" /></button>
+            <button type="button" aria-label="Close filters" onClick={() => setOpen(false)} className="flex h-8 min-h-11 min-w-11 w-8 items-center justify-center px-cut text-faint hover:bg-bone/[0.07] hover:text-bone sm:min-h-0 sm:min-w-0"><X size={16} aria-hidden="true" /></button>
           </div>
           {form}
         </div>

@@ -55,7 +55,7 @@ export function Board({ columns }: { columns: BoardColumn[] }) {
               role="tab"
               aria-selected={active === index}
               onClick={() => go(index)}
-              className={`flex h-9 shrink-0 items-center gap-1.5 whitespace-nowrap px-cut px-3 text-[13.5px] font-semibold transition-colors ${active === index ? "bg-raised text-bone" : "text-mute hover:text-bone"}`}
+              className={`flex h-9 min-h-11 shrink-0 items-center gap-1.5 whitespace-nowrap px-cut px-3 text-[14px] font-semibold transition-colors sm:min-h-0 ${active === index ? "bg-raised text-bone" : "text-mute hover:text-bone"}`}
             >
               {column.title}
               {column.count ? <span className="num text-[12px] text-faint">{column.count}</span> : null}
@@ -72,7 +72,7 @@ export function Board({ columns }: { columns: BoardColumn[] }) {
             >
               {column.title}
             </SectionTitle>
-            <div className="flex min-h-0 flex-1 flex-col gap-1 overflow-y-auto px-1.5 pb-1.5 [&>*]:shrink-0">{column.children}</div>
+            <div className="flex min-h-0 flex-1 flex-col gap-2 overflow-y-auto px-1.5 pb-1.5 [&>*]:shrink-0">{column.children}</div>
           </section>
         ))}
       </div>

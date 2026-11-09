@@ -5,7 +5,7 @@ import { FlywheelSettingsForm } from "@/components/FlywheelSettingsForm";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Copy, Power, ShieldAlert } from "lucide-react";
 import { useEffect, useState } from "react";
-import { Button, Empty, Field, PageHeader, Pill, SectionTitle, StatTile, inputClass } from "@/components/bits";
+import { Button, Empty, Field, PageHeader, Pill, SectionTitle, StatTile, Toggle, inputClass } from "@/components/bits";
 import { api } from "@/lib/api";
 import { ago, clock, money, pauseReason } from "@/lib/format";
 import { useMe } from "@/lib/session";
@@ -14,7 +14,67 @@ import { useNow, useUi } from "@/lib/ui";
 
 interface DropSettings {
   enabled: boolean; minPrice: number; maxPrice: number; crashLo: number; crashHi: number; hiddenShare: number; intervalFloorSec: number; ttlSec: number;
-  relists: number; winCooldownSec: number; dailySpendCap: number; walletFloor: number; budgetPerDayFallback: number; machineMix: Array<{ code: string; weight: number }>;
+  relists: number; winCooldownSec: number; dailySpendCap: number; walletFloor: number; budgetPerDayFallback: number; ladder: PackTier[];
+}
+
+interface PackTier { price: number; unlockAt: number; weight: number; enabled: boolean; machines: string[] }
+/** A pack size as typed in the form: dollars and a comma list, until it is saved. */
+interface TierRow { price: string; unlockAt: string; weight: string; enabled: boolean; machines: string }
+
+const toRow = (tier: PackTier): TierRow => ({ price: String(tier.price / 1e6), unlockAt: String(tier.unlockAt / 1e6), weight: String(tier.weight), enabled: tier.enabled, machines: tier.machines.join(", ") });
+
+function fromRow(row: TierRow): PackTier | null {
+  const price = Number(row.price);
+  const unlockAt = Number(row.unlockAt);
+  const weight = Number(row.weight);
+  const machines = row.machines.split(/[\s,]+/).map((code) => code.trim().toLowerCase()).filter(Boolean);
+  if (!(price > 0) || !(unlockAt >= 0) || !(weight >= 0) || machines.length === 0) return null;
+  return { price: usd(price), unlockAt: usd(unlockAt), weight, enabled: row.enabled, machines };
+}
+
+/**
+ * Which pack sizes Pulse opens, and when. Admin only: nothing here is shown to users, so a size switched off
+ * simply stops dropping. The status line reads the pool as it is now, before packs already promised.
+ */
+function PackLadder({ rows, setRows, free }: { rows: TierRow[]; setRows: (rows: TierRow[]) => void; free: number }) {
+  const patch = (index: number, change: Partial<TierRow>) => setRows(rows.map((row, i) => (i === index ? { ...row, ...change } : row)));
+  const tiers = rows.map(fromRow);
+  const open = tiers.map((tier) => !!tier && tier.enabled && tier.weight > 0 && free >= tier.unlockAt && free >= tier.price);
+  const openWeight = tiers.reduce((sum, tier, i) => sum + (open[i] ? tier!.weight : 0), 0);
+  return (
+    <div className="px-4 pb-4">
+      <div className="flex items-center justify-between gap-2 pb-1.5">
+        <span className="text-[12.5px] font-medium text-mute">Pack sizes</span>
+        <Button type="button" className="h-8" onClick={() => setRows([...rows, { price: "", unlockAt: "", weight: "5", enabled: true, machines: "" }])}>Add size</Button>
+      </div>
+      <p className="pb-2.5 text-[12.5px] text-faint">
+        A size opens once the Pulse pool's free money reaches its amount. Open sizes are mixed by weight, and one over $100 never drops twice in a row. Users never see this list.
+      </p>
+      <ul className="flex flex-col gap-2">
+        {rows.map((row, index) => {
+          const tier = tiers[index];
+          const status = !tier ? "Needs a price, an amount, a weight and a machine" : !tier.enabled ? "Off" : tier.weight === 0 ? "Weight 0, never picked" : open[index] ? `Open, about ${Math.round((tier.weight / openWeight) * 100)}% of drops` : `Locked until ${money(Math.max(tier.unlockAt, tier.price), true)} free`;
+          return (
+            <li key={index} className="tile flex flex-col gap-2 p-2.5">
+              <div className="grid grid-cols-3 items-end gap-2">
+                <Field label="Pack $"><input className={`${inputClass} num`} inputMode="decimal" value={row.price} onChange={(e) => patch(index, { price: e.target.value })} /></Field>
+                <Field label="Opens at $"><input className={`${inputClass} num`} inputMode="decimal" value={row.unlockAt} onChange={(e) => patch(index, { unlockAt: e.target.value })} /></Field>
+                <Field label="Weight"><input className={`${inputClass} num`} inputMode="decimal" value={row.weight} onChange={(e) => patch(index, { weight: e.target.value })} /></Field>
+              </div>
+              <Field label="Machines, comma separated">
+                <input className={`${inputClass} num text-[13px]`} value={row.machines} onChange={(e) => patch(index, { machines: e.target.value })} />
+              </Field>
+              <div className="flex flex-wrap items-center gap-x-4 gap-y-2">
+                <Toggle checked={row.enabled} onChange={(enabled) => patch(index, { enabled })}>On</Toggle>
+                <span className={`text-[12.5px] ${open[index] ? "text-teal" : "text-faint"}`}>{status}</span>
+                <button type="button" onClick={() => setRows(rows.filter((_, i) => i !== index))} className="ml-auto text-[12.5px] text-faint hover:text-loss">Remove</button>
+              </div>
+            </li>
+          );
+        })}
+      </ul>
+    </div>
+  );
 }
 
 interface Overview {
@@ -111,7 +171,7 @@ export default function AdminPage() {
   const now = useNow();
   const query = useQuery({ queryKey: ["admin"], enabled: !!me?.isAdmin, queryFn: () => api<Overview>("/admin/overview"), refetchInterval: 10_000 });
   const [form, setForm] = useState<Record<string, string>>({});
-  const [mix, setMix] = useState("");
+  const [ladder, setLadder] = useState<TierRow[]>([]);
 
   const s = query.data?.settings.drops;
   useEffect(() => {
@@ -121,8 +181,8 @@ export default function AdminPage() {
       hiddenShare: String(s.hiddenShare * 100), intervalFloorSec: String(s.intervalFloorSec), ttlSec: String(s.ttlSec), winCooldownSec: String(s.winCooldownSec),
       dailySpendCap: String(s.dailySpendCap / 1e6), walletFloor: String(s.walletFloor / 1e6), budgetPerDayFallback: String(s.budgetPerDayFallback / 1e6),
     });
-    setMix(s.machineMix.map((m) => `${m.code}:${m.weight}`).join("\n"));
-  }, [s?.maxPrice, s?.minPrice, s?.hiddenShare, s?.winCooldownSec]); // eslint-disable-line react-hooks/exhaustive-deps
+    setLadder(s.ladder.map(toRow));
+  }, [s?.maxPrice, s?.minPrice, s?.hiddenShare, s?.winCooldownSec, JSON.stringify(s?.ladder)]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const ops = useMutation({
     mutationFn: (body: { killSwitch?: boolean; reconcileHold?: boolean }) => api("/admin/ops", { body }),
@@ -140,13 +200,15 @@ export default function AdminPage() {
   const save = useMutation({
     mutationFn: () => {
       const n = (key: string) => Number(form[key]);
+      const tiers = ladder.map(fromRow);
+      if (tiers.length === 0 || tiers.some((tier) => !tier)) throw new Error("Each pack size needs a price, an amount, a weight and at least one machine");
       return api("/admin/settings/drops", {
         method: "PATCH",
         body: {
           minPrice: usd(n("minPrice")), maxPrice: usd(n("maxPrice")), crashLo: n("crashLo") / 100, crashHi: n("crashHi") / 100, hiddenShare: n("hiddenShare") / 100,
           intervalFloorSec: n("intervalFloorSec"), ttlSec: n("ttlSec"), winCooldownSec: n("winCooldownSec"), dailySpendCap: usd(n("dailySpendCap")), walletFloor: usd(n("walletFloor")),
           budgetPerDayFallback: usd(n("budgetPerDayFallback")),
-          machineMix: mix.split(/\n+/).map((line) => line.split(":")).filter(([code, weight]) => code && Number(weight) > 0).map(([code, weight]) => ({ code: code!.trim(), weight: Number(weight) })),
+          ladder: [...(tiers as PackTier[])].sort((a, b) => a.price - b.price),
         },
       });
     },
@@ -228,14 +290,10 @@ export default function AdminPage() {
               {input("intervalFloorSec", "Fastest interval (s)")}
               {input("winCooldownSec", "Win cooldown (s)", "0 turns it off")}
               {input("dailySpendCap", "Daily spend cap $")}
-              {input("walletFloor", "Wallet floor $")}
+              {input("walletFloor", "Wallet floor $", "Kept back, never spent")}
               {input("budgetPerDayFallback", "Fallback budget $/day")}
             </div>
-            <div className="px-4 pb-4">
-              <Field label="Machine mix (code:weight, one per line)">
-                <textarea className={`${inputClass} num !h-[120px] py-2 text-[13px]`} value={mix} onChange={(e) => setMix(e.target.value)} />
-              </Field>
-            </div>
+            <PackLadder rows={ladder} setRows={setLadder} free={balance("drops") - usd(Number(form.walletFloor) || 0)} />
           </form>
 
           <div className="flex min-w-0 flex-col gap-3">

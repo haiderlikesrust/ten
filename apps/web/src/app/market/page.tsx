@@ -62,8 +62,8 @@ function useDebounced<T>(value: T, ms: number): T {
 }
 
 /** Rows grow with the Buy button, and each one is 4px taller than it paints. */
-const ROW_HEIGHT: Record<BuySize, number> = { s: 60, m: 60, l: 76, xl: 104 };
-const THUMB: Record<BuySize, number> = { s: 32, m: 32, l: 44, xl: 64 };
+const ROW_HEIGHT: Record<BuySize, number> = { s: 60, m: 60, l: 76 };
+const THUMB: Record<BuySize, number> = { s: 32, m: 32, l: 44 };
 
 const COLUMNS = "md:grid-cols-[var(--thumb)_minmax(0,1fr)_76px_52px_76px_76px_44px_auto] xl:grid-cols-[var(--thumb)_minmax(0,1.3fr)_minmax(0,1fr)_84px_60px_84px_84px_52px_124px]";
 

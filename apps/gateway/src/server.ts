@@ -57,6 +57,17 @@ function mentionsAccount(base64: string, address: string): boolean {
     return false;
   }
 }
+
+/** A pack ladder from Admin: whole-dollar-safe amounts, a usable weight, and machine codes for every size. */
+function validLadder(value: unknown): boolean {
+  const micros = (n: unknown) => Number.isSafeInteger(n) && (n as number) >= 0;
+  return Array.isArray(value) && value.length > 0 && value.length <= 12 && value.every((tier) => {
+    const t = tier as Record<string, unknown>;
+    return !!t && micros(t.price) && (t.price as number) > 0 && micros(t.unlockAt) && typeof t.weight === "number" && Number.isFinite(t.weight) && t.weight >= 0
+      && typeof t.enabled === "boolean" && Array.isArray(t.machines) && t.machines.length > 0 && t.machines.length <= 20
+      && t.machines.every((code) => typeof code === "string" && /^[a-z0-9_]{1,40}$/.test(code));
+  });
+}
 const HOLDING_ACTIONS = ["buyback", "list", "send"];
 const asNumber = (value: unknown): number | undefined => {
   const n = Number(value);
@@ -782,6 +793,8 @@ export async function buildServer(opts: ServerOptions) {
       if (!(body.minPrice! > 0) || body.maxPrice! < body.minPrice! || !(body.crashHi! <= 1) || body.crashLo! > body.crashHi! || !(body.ttlSec! > 0)) {
         return reply.code(400).send({ error: "Those drop settings do not make sense" });
       }
+      const ladder = (request.body as { ladder?: unknown }).ladder;
+      if (ladder !== undefined && !validLadder(ladder)) return reply.code(400).send({ error: "Each pack size needs a price, an unlock amount, a weight and at least one machine" });
     }
     return setSetting(db, key, request.body as never);
   });

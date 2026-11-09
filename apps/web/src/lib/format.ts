@@ -10,6 +10,8 @@ const PAUSE_REASONS: Record<string, string> = {
   reconcile_mismatch: "the balance check found a difference",
   wallet_floor: "the Pulse pool is low",
   daily_cap: "today's spend cap is reached",
+  no_machines: "no pack machines are open right now",
+  no_budget: "there is no drop budget yet",
 };
 
 export const pauseReason = (reason: string | null | undefined): string => (reason ? PAUSE_REASONS[reason] ?? reason : "");

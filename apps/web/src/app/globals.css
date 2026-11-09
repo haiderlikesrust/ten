@@ -99,11 +99,11 @@ body {
 }
 
 body {
-  background: radial-gradient(color-mix(in srgb, var(--bone) 8%, transparent) 1px, transparent 1.5px) 0 0 / 12px 12px, var(--ink);
+  background: radial-gradient(color-mix(in srgb, var(--bone) 4%, transparent) 1px, transparent 1.5px) 0 0 / 16px 16px, var(--ink);
   color: var(--bone);
   font-family: var(--font-figtree), system-ui, sans-serif;
-  font-size: 14px;
-  line-height: 1.4;
+  font-size: 15px;
+  line-height: 1.5;
   -webkit-font-smoothing: antialiased;
   -webkit-tap-highlight-color: transparent;
 }
@@ -154,11 +154,12 @@ select {
   letter-spacing: -0.01em;
 }
 
-/* A row or item inside a panel. */
+/* Content rows stay quieter than the handheld chrome around them. */
 .tile {
   position: relative;
   background: var(--raised);
-  border: 1px solid transparent;
+  border: 1px solid var(--line);
+  border-radius: 4px;
   transition: background-color 0.15s, border-color 0.15s, transform 0.15s, box-shadow 0.15s;
 }
 
@@ -222,8 +223,7 @@ select {
 .px-box::after,
 .slab::before,
 .slab::after,
-.px-cut,
-.tile {
+.px-cut {
   clip-path: polygon(
     0 calc(var(--s) * 2), var(--s) calc(var(--s) * 2), var(--s) var(--s), calc(var(--s) * 2) var(--s), calc(var(--s) * 2) 0,
     calc(100% - var(--s) * 2) 0, calc(100% - var(--s) * 2) var(--s), calc(100% - var(--s)) var(--s), calc(100% - var(--s)) calc(var(--s) * 2), 100% calc(var(--s) * 2),
@@ -232,8 +232,7 @@ select {
   );
 }
 
-.px-cut,
-.tile {
+.px-cut {
   --s: 2px;
 }
 

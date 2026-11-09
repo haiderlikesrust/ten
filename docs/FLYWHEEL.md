@@ -62,7 +62,7 @@ Pulse sales (half of what winners pay) ──► buyback and burn of $TENR      
 ### Prize
 - Pack tiers match Collector Crypt machine prices: **$500, $250, $100, $50**.
 - Each draw may spend up to **1/12 of the pool** (`giftSpendBps: 833`), so a pool with no new money lasts about six hours.
-- The prize is the biggest tier that fits. The machine is an open CC machine at that price, preferring the drops `machineMix`, and the next tier down if none is open.
+- The prize is the biggest tier that fits. The machine is an open CC machine at that price, preferring machines on the Pulse pack ladder that are switched on, and the next tier down if none is open.
 - **Rollover:** if even $50 doesn't fit, nobody wins that draw and the pot keeps growing. The page shows "rolling over".
 
 ### Who can win

@@ -147,7 +147,7 @@ export function PageHeader({ title, subtitle, right }: { title: string; subtitle
     <div className="flex flex-wrap items-end justify-between gap-x-6 gap-y-3 pb-0.5 pt-2">
       <div className="min-w-0">
         <h1 className="pixel text-[20px] uppercase leading-none">{title}</h1>
-        {subtitle ? <p className="mt-1.5 max-w-[640px] text-[13.5px] text-faint">{subtitle}</p> : null}
+        {subtitle ? <p className="mt-1.5 max-w-[65ch] text-[14px] leading-relaxed text-faint">{subtitle}</p> : null}
       </div>
       {right}
     </div>
@@ -158,9 +158,9 @@ export function Stat({ label, value, tone, hint }: { label: string; value: React
   const color = tone === "good" ? "text-teal" : tone === "bad" ? "text-loss" : tone === "warn" ? "text-gold" : "text-bone";
   return (
     <div className="min-w-0">
-      <div className="truncate text-[12.5px] font-medium text-faint">{label}</div>
+      <div className="truncate text-[13px] font-medium text-faint">{label}</div>
       <div className={`num mt-0.5 truncate text-[20px] font-semibold leading-tight ${color}`}>{value}</div>
-      {hint ? <div className="mt-0.5 truncate text-[12px] text-faint">{hint}</div> : null}
+      {hint ? <div className="mt-0.5 truncate text-[12.5px] text-faint">{hint}</div> : null}
     </div>
   );
 }
@@ -223,7 +223,7 @@ export function Button({
       title={title}
       disabled={disabled}
       onClick={onClick}
-      className={`inline-flex h-10 shrink-0 items-center justify-center gap-1.5 whitespace-nowrap px-cut px-3.5 font-semibold transition active:scale-[0.98] disabled:cursor-not-allowed disabled:!bg-raised disabled:!text-faint ${tones[tone]} ${main} ${className}`}
+      className={`inline-flex h-10 min-h-11 shrink-0 items-center justify-center gap-1.5 whitespace-nowrap px-cut px-3.5 font-semibold transition active:scale-[0.98] disabled:cursor-not-allowed disabled:opacity-60 disabled:!bg-raised disabled:!text-faint sm:min-h-0 ${tones[tone]} ${main} ${className}`}
     >
       {children}
     </button>
@@ -240,7 +240,7 @@ export function Segmented<T extends string>({ value, options, onChange, label }:
           role="tab"
           aria-selected={value === option.value}
           onClick={() => onChange(option.value)}
-          className={`h-7 shrink-0 whitespace-nowrap px-cut px-2.5 text-[13px] font-medium transition-colors ${value === option.value ? "bg-surface text-gold" : "text-faint hover:text-bone"}`}
+          className={`h-7 min-h-11 shrink-0 whitespace-nowrap px-cut px-2.5 text-[13px] font-medium transition-colors sm:min-h-0 ${value === option.value ? "bg-surface text-gold" : "text-faint hover:text-bone"}`}
         >
           {option.label}
         </button>
@@ -271,7 +271,7 @@ export function Toggle({ checked, onChange, children }: { checked: boolean; onCh
   );
 }
 
-export const inputClass = "h-10 w-full min-w-0 px-cut border border-line bg-raised px-3 text-[14px] text-bone placeholder:text-faint transition-colors focus:border-gold focus:outline-none";
+export const inputClass = "h-10 min-h-11 w-full min-w-0 px-cut border border-line bg-raised px-3 text-[15px] text-bone placeholder:text-faint transition-colors focus:border-gold focus:outline-none sm:min-h-0";
 
 /** Slides up from the bottom on phones, sits centered on bigger screens. */
 export function Sheet({ title, onClose, children, wide }: { title: string; onClose: () => void; children: ReactNode; wide?: boolean }) {
@@ -287,7 +287,7 @@ export function Sheet({ title, onClose, children, wide }: { title: string; onClo
       <div className={`sheet slab flex max-h-[88dvh] w-full flex-col overflow-hidden [--px-line:var(--line-strong)] ${wide ? "sm:max-w-[720px]" : "sm:max-w-[460px]"} `} onClick={(event) => event.stopPropagation()}>
         <div className="flex h-14 shrink-0 items-center justify-between gap-2 pl-5 pr-3">
           <h2 className="pixel truncate text-[14px] uppercase leading-none">{title}</h2>
-          <button type="button" aria-label="Close" onClick={onClose} className="flex h-9 w-9 items-center justify-center px-cut text-mute hover:bg-bone/[0.07] hover:text-bone">
+          <button type="button" aria-label="Close" onClick={onClose} className="flex h-11 w-11 items-center justify-center px-cut text-mute hover:bg-bone/[0.07] hover:text-bone sm:h-9 sm:w-9">
             <X size={19} aria-hidden="true" />
           </button>
         </div>

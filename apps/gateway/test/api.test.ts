@@ -1,6 +1,6 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { randomUUID } from "node:crypto";
-import { usd } from "@gemdex/core";
+import { DEFAULT_DROP_SETTINGS, usd } from "@gemdex/core";
 import { drops, eq, giftDraws, holdings, machines, orders, setSetting, users } from "@gemdex/db";
 import { buildServer } from "../src/server";
 import { createTestDb, type TestDb } from "../../../tools/testdb";
@@ -116,6 +116,16 @@ describe("input validation", () => {
     expect(me.strikes).toBe(0);
     const bad = await app.inject({ method: "PATCH", url: "/admin/settings/drops", headers, payload: { minPrice: 10, maxPrice: 1, crashLo: 0.5, crashHi: 0.8, ttlSec: 45 } });
     expect(bad.statusCode).toBe(400);
+    // A pack ladder must be whole, with a machine for every size.
+    const sane = { minPrice: usd(5), maxPrice: usd(100), crashLo: 0.1, crashHi: 0.4, ttlSec: 300 };
+    const tier = { price: usd(25), unlockAt: usd(25), weight: 40, enabled: true, machines: ["pokemon_25"] };
+    for (const ladder of [[], [{ ...tier, machines: [] }], [{ ...tier, price: -1 }], [{ ...tier, enabled: "yes" }], [{ ...tier, machines: ["DROP TABLE"] }]]) {
+      expect((await app.inject({ method: "PATCH", url: "/admin/settings/drops", headers, payload: { ...sane, ladder } })).statusCode).toBe(400);
+    }
+    const saved = await app.inject({ method: "PATCH", url: "/admin/settings/drops", headers, payload: { ...sane, ladder: [tier, { ...tier, price: usd(500), unlockAt: usd(3_000), weight: 5, enabled: false, machines: ["pokemon_500"] }] } });
+    expect(saved.statusCode).toBe(200);
+    expect((saved.json() as { ladder: unknown[] }).ladder).toHaveLength(2);
+    await setSetting(t.db, "drops", { ladder: DEFAULT_DROP_SETTINGS.ladder });
   });
 });
 

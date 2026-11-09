@@ -3,7 +3,7 @@ import {
   DEFAULT_CASHBACK_SETTINGS as CB, DEFAULT_DROP_SETTINGS as S, HIDDEN, REVEALED, TERMINAL,
   assertTransition, canTransition, cashbackAmount, cashbackCapBps, discountPct, expectedBurn,
   floorToCents, formatUsd, hiddenPrice, holderBalance, intervalSeconds, ofBps,
-  parseGradeNumber, parseUsd, pauseReason, pickMachine, recycleCost, splitFees,
+  ladderMix, parseGradeNumber, parseUsd, pauseReason, pickMachine, recycleCost, splitFees,
   tierFor, usd, type MachineEcon,
 } from "../src/index";
 
@@ -74,7 +74,7 @@ describe("budget", () => {
     expect(intervalSeconds(usd(5), 0, 30)).toBe(Number.POSITIVE_INFINITY);
   });
   it("pauses for the most serious reason first", () => {
-    const base = { enabled: true, killSwitch: false, reconcileHold: false, dropsBalance: usd(500), spent24h: 0, settings: S };
+    const base = { enabled: true, killSwitch: false, reconcileHold: false, dropsBalance: usd(500), spent24h: 0, settings: { ...S, walletFloor: usd(100) } };
     expect(pauseReason(base)).toBeNull();
     expect(pauseReason({ ...base, dropsBalance: usd(1) })).toBe("wallet_floor");
     expect(pauseReason({ ...base, spent24h: S.dailySpendCap })).toBe("daily_cap");
@@ -84,8 +84,47 @@ describe("budget", () => {
   it("skips closed or empty machines", () => {
     const closed = { ...p25, open: false };
     const empty = { ...db50, stock: 0 };
-    expect(pickMachine(S.machineMix, [closed, empty], 0.5)).toBeNull();
-    expect(pickMachine(S.machineMix, [closed, db50], 0.99)?.code).toBe("dragonball_50");
+    const mix = [{ code: "pokemon_25", weight: 60 }, { code: "dragonball_50", weight: 40 }];
+    expect(pickMachine(mix, [closed, empty], 0.5)).toBeNull();
+    expect(pickMachine(mix, [closed, db50], 0.99)?.code).toBe("dragonball_50");
+  });
+});
+
+describe("pack ladder", () => {
+  const m = (code: string, price: number): MachineEcon => ({ code, price: usd(price), buybackPct: 90, ev: usd(price * 1.04), commonFloor: usd(price / 2), open: true, stock: 100 });
+  const all = [m("pokemon_25", 25), m("pokemon_50", 50), m("onepiece_50", 50), m("dragonball_50", 50), m("pokemon_100", 100), m("pokemon_250", 250), m("onepiece_250", 250), m("pokemon_500", 500)];
+  const sizes = (free: number, last: number | null = null) =>
+    [...new Set(ladderMix(S.ladder, all, usd(free), last === null ? null : usd(last)).map((x) => all.find((a) => a.code === x.code)!.price / 1e6))];
+
+  it("opens $25 at $25, and adds bigger sizes as the pool grows", () => {
+    expect(sizes(24)).toEqual([]);
+    expect(sizes(25)).toEqual([25]);
+    expect(sizes(1_000)).toEqual([25, 50, 100]);
+    expect(sizes(2_000)).toEqual([25, 50, 100, 250]);
+    expect(sizes(3_000)).toEqual([25, 50, 100, 250, 500]);
+  });
+  it("keeps mixing at a big pool: $500 is a small share, and never twice in a row", () => {
+    const mix = ladderMix(S.ladder, all, usd(4_000), null);
+    const total = mix.reduce((sum, x) => sum + x.weight, 0);
+    const share = (code: string) => (mix.find((x) => x.code === code)?.weight ?? 0) / total;
+    expect(share("pokemon_500")).toBeCloseTo(0.05);
+    expect(share("pokemon_25")).toBeCloseTo(0.4);
+    // A size's weight is shared by its machines, so three $50 machines don't triple the $50 share.
+    expect(share("pokemon_50") + share("onepiece_50") + share("dragonball_50")).toBeCloseTo(0.25);
+    expect(sizes(4_000, 500)).toEqual([25, 50, 100, 250]);
+    expect(sizes(4_000, 100)).toEqual([25, 50, 100, 250, 500]);
+    // With nothing else open, a big size may repeat rather than stop Pulse.
+    const only500 = S.ladder.map((t) => ({ ...t, enabled: t.price === usd(500) }));
+    expect(ladderMix(only500, all, usd(4_000), usd(500)).map((x) => x.code)).toEqual(["pokemon_500"]);
+  });
+  it("leaves out sizes that are off, unaffordable, or have no machine that can sell", () => {
+    const off = S.ladder.map((t) => (t.price === usd(25) ? { ...t, enabled: false } : t));
+    expect(ladderMix(off, all, usd(25), null)).toEqual([]);
+    const closed = all.map((x) => (x.code === "pokemon_100" ? { ...x, open: false } : x));
+    expect(ladderMix(S.ladder, closed, usd(1_000), null).some((x) => x.code === "pokemon_100")).toBe(false);
+    // A machine listed under the wrong price is never used.
+    const wrong = S.ladder.map((t) => (t.price === usd(25) ? { ...t, machines: ["pokemon_50"] } : t));
+    expect(ladderMix(wrong, all, usd(100), null)).toEqual([]);
   });
 });
 

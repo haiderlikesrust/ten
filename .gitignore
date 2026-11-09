@@ -15,3 +15,5 @@ tools/spike/out
 # The promo video project, its music and its renders stay local.
 promo/
 *.tsbuildinfo
+# tools/chart-check.ts screenshots and its browser profile.
+.chart-check/

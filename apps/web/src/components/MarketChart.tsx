@@ -1,7 +1,7 @@
 "use client";
 
-import { useEffect, useRef, useState, type ReactNode } from "react";
-import { baseChartOptions, chartColors, formatPrice, withAlpha } from "@/lib/chart";
+import { useEffect, useRef, useState } from "react";
+import { baseChartOptions, chartColors, formatPrice, localTime, withAlpha } from "@/lib/chart";
 import { onPriceTick, type PulseCard } from "@/lib/pulse";
 import { useUi } from "@/lib/ui";
 import { Segmented } from "./bits";
@@ -14,9 +14,17 @@ interface Bar {
   close: number;
 }
 
+type ChartMode = "line" | "candles";
+
 const FRAMES = [1, 5, 15, 30];
 /** A price change eases in over this long. Shorter than a tick, so it never falls behind. */
 const GLIDE_MS = 650;
+
+const shortTime = (seconds: number) => `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, "0")}`;
+const referenceGap = (current: number, reference: number) => {
+  const gap = Math.round(Math.abs(current / reference - 1) * 100);
+  return `${gap}% ${current <= reference ? "below" : "above"}`;
+};
 
 function toBars(points: Map<number, number>, frame: number): Bar[] {
   const bars: Bar[] = [];
@@ -68,7 +76,7 @@ function createBand(open: number) {
   };
 }
 
-function Legend({ bar, first }: { bar: Bar | null; first: number }) {
+function Legend({ bar, first, detailed }: { bar: Bar | null; first: number; detailed: boolean }) {
   if (!bar) return null;
   const color = bar.close >= bar.open ? "text-teal" : "text-loss";
   const change = first > 0 ? (bar.close / first - 1) * 100 : 0;
@@ -76,11 +84,12 @@ function Legend({ bar, first }: { bar: Bar | null; first: number }) {
     <span className="whitespace-nowrap"><span className="text-faint">{label}</span> <span className={color}>{value}</span></span>
   );
   return (
-    <div className="num pointer-events-none absolute left-3 top-1.5 z-10 flex max-w-[calc(100%-72px)] flex-wrap items-center gap-x-2.5 gap-y-0.5 text-[12px] font-medium">
-      {item("O", formatPrice(bar.open))}
-      {item("H", formatPrice(bar.high))}
-      {item("L", formatPrice(bar.low))}
-      {item("C", formatPrice(bar.close))}
+    <div className="num pointer-events-none absolute left-3 top-1.5 z-10 flex max-w-[calc(100%-72px)] flex-wrap items-center gap-x-2.5 gap-y-0.5 text-[12.5px] font-medium">
+      {detailed ? <span className="whitespace-nowrap text-faint">{localTime(bar.time)}</span> : null}
+      {detailed ? item("O", formatPrice(bar.open)) : null}
+      {detailed ? item("H", formatPrice(bar.high)) : null}
+      {detailed ? item("L", formatPrice(bar.low)) : null}
+      <span className="whitespace-nowrap text-[14px] text-bone">{detailed ? "C " : ""}{formatPrice(bar.close)}</span>
       <span className={`whitespace-nowrap ${change >= 0 ? "text-teal" : "text-loss"}`}>{change >= 0 ? "+" : ""}{change.toFixed(1)}%</span>
     </div>
   );
@@ -88,15 +97,16 @@ function Legend({ bar, first }: { bar: Bar | null; first: number }) {
 
 interface Handle {
   merge: (rows: Array<[number, number]>) => void;
-  setLimit: (price: number | null) => void;
+  setLimit: (price: number | null, current: number) => void;
 }
 
-export function MarketChart({ card, prices, limit, moveSec, status }: { card: PulseCard; prices: number[]; limit: number | null; moveSec: number; status?: ReactNode }) {
+export function MarketChart({ card, prices, limit, moveSec }: { card: PulseCard; prices: number[]; limit: number | null; moveSec: number }) {
   const box = useRef<HTMLDivElement>(null);
   const zone = useRef<HTMLDivElement>(null);
   const lockLine = useRef<HTMLDivElement>(null);
   const handle = useRef<Handle | null>(null);
   const [frame, setFrame] = useState(5);
+  const [mode, setMode] = useState<ChartMode>("candles");
   const [hovered, setHovered] = useState<Bar | null>(null);
   const [latest, setLatest] = useState<Bar | null>(null);
   const theme = useUi((s) => s.theme);
@@ -104,12 +114,17 @@ export function MarketChart({ card, prices, limit, moveSec, status }: { card: Pu
   const start = Math.floor(opens / 1000);
   const stopped = !!card.stoppedAt;
   const boughtPrice = card.boughtBy ? card.price : null;
-  // Every price seen so far, kept across timeframe and theme changes.
+  const remaining = Math.max(0, Math.ceil(moveSec - (Date.now() - opens) / 1000));
+  // Every price seen so far, kept across timeframe, chart-type and theme changes.
   const known = useRef(new Map<number, number>());
 
   const toPoints = (rows: number[]): Array<[number, number]> => rows.map((micros, i) => [start + i, micros / 1e6]);
   const seed = useRef({ prices, limit });
   seed.current = { prices, limit };
+
+  useEffect(() => {
+    if (window.matchMedia("(max-width: 639px)").matches) setMode("line");
+  }, []);
 
   useEffect(() => {
     if (!box.current) return;
@@ -129,23 +144,40 @@ export function MarketChart({ card, prices, limit, moveSec, status }: { card: Pu
         grid: { vertLines: { visible: false }, horzLines: { color: withAlpha(colors.line, 0.5) } },
         rightPriceScale: { borderVisible: false, scaleMargins: { top: 0.06, bottom: 0.04 } },
         crosshair: { ...base.crosshair, mode: CrosshairMode.Normal },
-        timeScale: { ...base.timeScale, borderVisible: false, shiftVisibleRangeOnNewBar: false, lockVisibleTimeRangeOnResize: true },
-      } as never);
-
-      const band = createBand(card.openPrice / 1e6);
-      const candles = chart.addCandlestickSeries({
-        upColor: colors.up, downColor: colors.down, wickUpColor: colors.up, wickDownColor: colors.down, borderVisible: false,
-        priceFormat: { type: "custom", formatter: formatPrice, minMove: 0.01 },
-        autoscaleInfoProvider: (original: () => unknown) => {
-          const range = band.range();
-          return range ? { priceRange: { minValue: range.min, maxValue: range.max } } : original();
+        timeScale: {
+          ...base.timeScale,
+          borderVisible: false,
+          shiftVisibleRangeOnNewBar: false,
+          lockVisibleTimeRangeOnResize: true,
+          tickMarkFormatter: (time: number) => shortTime(Math.max(0, Math.round(time - start))),
         },
       } as never);
 
-      if (card.insuredValue) candles.createPriceLine({ price: card.insuredValue / 1e6, color: colors.gold, lineStyle: LineStyle.Dashed, lineWidth: 1, axisLabelVisible: true, title: "Insured" });
+      const band = createBand(card.openPrice / 1e6);
+      const autoscaleInfoProvider = (original: () => unknown) => {
+        const range = band.range();
+        return range ? { priceRange: { minValue: range.min, maxValue: range.max } } : original();
+      };
+      const priceFormat = { type: "custom", formatter: formatPrice, minMove: 0.01 };
+      const series = mode === "line" ? chart.addAreaSeries({
+        lineColor: colors.up,
+        topColor: withAlpha(colors.up, 0.18),
+        bottomColor: withAlpha(colors.up, 0),
+        lineWidth: 2,
+        priceFormat,
+        autoscaleInfoProvider,
+      } as never) : chart.addCandlestickSeries({
+        upColor: colors.up, downColor: colors.down, wickUpColor: colors.up, wickDownColor: colors.down, borderVisible: false,
+        priceFormat,
+        autoscaleInfoProvider,
+      } as never);
+      const seriesData = (rows: Bar[]) => mode === "line" ? rows.map((bar) => ({ time: bar.time, value: bar.close })) : rows;
+      const seriesBar = (bar: Bar) => mode === "line" ? { time: bar.time, value: bar.close } : bar;
+
+      if (card.insuredValue) series.createPriceLine({ price: card.insuredValue / 1e6, color: colors.gold, lineStyle: LineStyle.Dashed, lineWidth: 1, axisLabelVisible: true, title: "Insured" });
       if (boughtPrice) {
-        candles.applyOptions({ lastValueVisible: false, priceLineVisible: false });
-        candles.createPriceLine({ price: boughtPrice / 1e6, color: colors.bone, lineStyle: LineStyle.Solid, lineWidth: 1, axisLabelVisible: true, title: "Bought" });
+        series.applyOptions({ lastValueVisible: false, priceLineVisible: false });
+        series.createPriceLine({ price: boughtPrice / 1e6, color: colors.bone, lineStyle: LineStyle.Solid, lineWidth: 1, axisLabelVisible: true, title: "Bought" });
       }
 
       const points = known.current;
@@ -198,6 +230,12 @@ export function MarketChart({ card, prices, limit, moveSec, status }: { card: Pu
         line.style.bottom = bottom;
       };
 
+      const colorArea = (price: number) => {
+        if (mode !== "line") return;
+        const color = price >= card.openPrice / 1e6 ? colors.up : colors.down;
+        series.applyOptions({ lineColor: color, topColor: withAlpha(color, 0.18), bottomColor: withAlpha(color, 0) });
+      };
+
       const redraw = () => {
         bars = toBars(points, frame);
         byTime = new Map(bars.map((bar) => [bar.time, bar]));
@@ -206,16 +244,17 @@ export function MarketChart({ card, prices, limit, moveSec, status }: { card: Pu
           const reference = card.insuredValue ? card.insuredValue / 1e6 : null;
           const low = Math.min(...prices);
           const high = Math.max(...prices);
-          // Only pulls the insured line into view when that keeps the candles readable.
+          // Only pulls the insured line into view when that keeps the price action readable.
           const near = reference !== null && reference > low * 0.6 && reference < high * 1.6;
           band.fit(near ? Math.min(low, reference) : low, near ? Math.max(high, reference) : high);
         }
-        candles.setData(bars as never);
+        series.setData(seriesData(bars) as never);
         lockAxis();
         place();
         const last = bars[bars.length - 1];
+        if (last) colorArea(last.close);
         setLatest(last ? { ...last } : null);
-        if (boughtPrice && last) candles.setMarkers([{ time: last.time, position: "aboveBar", color: colors.gold, shape: "circle", text: "Bought" }] as never);
+        if (boughtPrice && last) series.setMarkers([{ time: last.time, position: "aboveBar", color: colors.gold, shape: "circle", text: "Bought" }] as never);
       };
 
       const loop = (now: number) => {
@@ -228,7 +267,7 @@ export function MarketChart({ card, prices, limit, moveSec, status }: { card: Pu
           if (t === 1) glide = null;
         }
         const widening = band.step();
-        if (bar) candles.update(bar as never);
+        if (bar) series.update(seriesBar(bar) as never);
         if (glide || widening) raf = requestAnimationFrame(loop);
       };
 
@@ -260,21 +299,29 @@ export function MarketChart({ card, prices, limit, moveSec, status }: { card: Pu
         }
         const bar = bars[bars.length - 1]!;
         band.fit(Math.min(bar.low, price), Math.max(bar.high, price));
+        colorArea(price);
         place();
         setLatest({ ...bar, high: Math.max(bar.high, price), low: Math.min(bar.low, price), close: price });
         if (calm || document.hidden) {
           settle(bar, price);
-          candles.update(bar as never);
+          series.update(seriesBar(bar) as never);
           return;
         }
         glide = { from: bar.close, to: price, start: performance.now() };
         if (!raf) raf = requestAnimationFrame(loop);
       };
 
-      let line: ReturnType<typeof candles.createPriceLine> | null = null;
-      const setLimit = (price: number | null) => {
-        if (line) candles.removePriceLine(line);
-        line = price ? candles.createPriceLine({ price: price / 1e6, color: colors.up, lineStyle: LineStyle.Dotted, lineWidth: 1, axisLabelVisible: true, title: "Limit" }) : null;
+      let line: ReturnType<typeof series.createPriceLine> | null = null;
+      const setLimit = (price: number | null, current: number) => {
+        if (!price) {
+          if (line) series.removePriceLine(line);
+          line = null;
+          return;
+        }
+        const hit = current <= price;
+        const options = { price: price / 1e6, color: hit ? colors.gold : colors.up, lineStyle: LineStyle.Dotted, lineWidth: 1 as const, axisLabelVisible: true, title: hit ? "Limit reached" : "Limit" };
+        if (line) line.applyOptions(options);
+        else line = series.createPriceLine(options);
       };
 
       chart.subscribeCrosshairMove((param) => setHovered(typeof param.time === "number" ? byTime.get(param.time) ?? null : null));
@@ -283,7 +330,7 @@ export function MarketChart({ card, prices, limit, moveSec, status }: { card: Pu
 
       for (const [second, price] of toPoints(seed.current.prices)) points.set(second, price);
       redraw();
-      setLimit(seed.current.limit);
+      setLimit(seed.current.limit, card.price);
       handle.current = { merge, setLimit };
 
       // Once a card is bought its chart stops, so later ticks are ignored.
@@ -307,33 +354,41 @@ export function MarketChart({ card, prices, limit, moveSec, status }: { card: Pu
       removed = true;
       cleanup();
     };
-  }, [boughtPrice, card.id, card.insuredValue, frame, moveSec, opens, start, stopped, theme]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [boughtPrice, card.id, card.insuredValue, frame, mode, moveSec, opens, start, stopped, theme]); // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
     handle.current?.merge(toPoints(prices));
   }, [prices]); // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
-    handle.current?.setLimit(limit);
-  }, [limit]);
+    handle.current?.setLimit(limit, card.price);
+  }, [card.price, limit]);
 
   return (
     <div className="flex h-full min-h-0 flex-col">
       <div className="flex shrink-0 flex-wrap items-center justify-between gap-2 px-2.5 py-2">
-        <Segmented
-          label="Timeframe"
-          value={String(frame)}
-          onChange={(value) => setFrame(Number(value))}
-          options={FRAMES.map((seconds) => ({ value: String(seconds), label: <span className="num">{seconds}s</span> }))}
-        />
-        <div className="flex min-w-0 items-center gap-3 text-[12.5px] text-faint">
-          {status}
-          {card.insuredValue ? <span className="hidden items-center gap-1.5 sm:flex"><span className="h-0 w-3.5 border-t border-dashed border-gold" /> Insured</span> : null}
+        <div className="flex flex-wrap items-center gap-2">
+          <Segmented
+            label="Chart type"
+            value={mode}
+            onChange={setMode}
+            options={[{ value: "line", label: "Line" }, { value: "candles", label: "Candles" }]}
+          />
+          {mode === "candles" ? <Segmented
+            label="Timeframe"
+            value={String(frame)}
+            onChange={(value) => setFrame(Number(value))}
+            options={FRAMES.map((seconds) => ({ value: String(seconds), label: <span className="num">{seconds}s</span> }))}
+          /> : null}
+        </div>
+        <div className="flex min-w-0 flex-wrap items-center gap-x-3 gap-y-1 text-[12px] text-faint">
+          {card.insuredValue ? <span className="flex items-center gap-1.5"><span className="h-0 w-3.5 border-t border-dashed border-gold" /> Insured {formatPrice(card.insuredValue / 1e6)} · {referenceGap(card.price, card.insuredValue)}</span> : null}
+          {limit ? <span className={`flex items-center gap-1.5 ${card.price <= limit ? "text-gold" : "text-teal"}`}><span className="h-0 w-3.5 border-t border-dotted border-current" /> {card.price <= limit ? "Limit reached" : `Limit ${formatPrice(limit / 1e6)} · ${referenceGap(card.price, limit)}`}</span> : null}
         </div>
       </div>
       <div className="relative min-h-0 flex-1">
-        <Legend bar={hovered ?? latest} first={card.openPrice / 1e6} />
-        <div ref={box} className="absolute inset-0" role="img" aria-label="Live candlestick price chart" />
+        <Legend bar={hovered ?? latest} first={card.openPrice / 1e6} detailed={!!hovered} />
+        <div ref={box} className="absolute inset-0" role="img" aria-label={`Live ${mode} price chart. Current ${formatPrice(card.price / 1e6)}, high ${formatPrice(card.high / 1e6)}, low ${formatPrice(card.low / 1e6)}.`} />
         <div
           ref={zone}
           className="pointer-events-none absolute top-0 z-[1] hidden"
@@ -343,7 +398,7 @@ export function MarketChart({ card, prices, limit, moveSec, status }: { card: Pu
           <span className="pixel absolute bottom-2 left-2 whitespace-nowrap text-[10px] uppercase leading-none text-faint">Time left</span>
         </div>
         <div ref={lockLine} className="pointer-events-none absolute top-0 z-[1] hidden border-l border-dashed border-gold/70" aria-hidden="true">
-          <span className="pixel absolute bottom-2 right-1.5 whitespace-nowrap text-[10px] uppercase leading-none text-gold">Lock</span>
+          <span className="pixel absolute bottom-2 right-1.5 whitespace-nowrap text-[10px] uppercase leading-none text-gold">Lock {shortTime(remaining)}</span>
         </div>
       </div>
     </div>

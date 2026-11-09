@@ -2,15 +2,16 @@
 
 import { shortAddress } from "@gemdex/core";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { ArrowLeft, BadgeCheck, Clock3, Lock, X } from "lucide-react";
+import { ArrowLeft, BadgeCheck, Clock3, LoaderCircle, Lock, X } from "lucide-react";
 import Link from "next/link";
 import { useParams } from "next/navigation";
 import { useState } from "react";
-import { Button, CardThumb, Empty, Grade, Pill, Rarity, inputClass } from "@/components/bits";
+import { Button, CardThumb, Empty, Grade, Pill, Rarity, Sheet, inputClass } from "@/components/bits";
 import { BuyButton, PctBadge, SealedThumb, cardName } from "@/components/market";
 import { MarketChart } from "@/components/MarketChart";
 import { api } from "@/lib/api";
 import { clock, money, packLabel } from "@/lib/format";
+import { useLive } from "@/lib/live";
 import { changePct, usePulse, type PulseCard } from "@/lib/pulse";
 import { useMe } from "@/lib/session";
 import { useNow, useUi } from "@/lib/ui";
@@ -47,7 +48,14 @@ function LimitOrder({ card, limit, refresh }: { card: PulseCard; limit: CardData
     },
     onError: (error) => toast({ tone: "bad", title: "Could not set that", detail: (error as Error).message }),
   });
-  const clear = useMutation({ mutationFn: () => api(`/pulse/drops/${card.id}/limit`, { method: "DELETE" }), onSuccess: refresh });
+  const clear = useMutation({
+    mutationFn: () => api(`/pulse/drops/${card.id}/limit`, { method: "DELETE" }),
+    onSuccess: () => {
+      toast({ tone: "ok", title: "Limit order cancelled" });
+      refresh();
+    },
+    onError: (error) => toast({ tone: "bad", title: "Could not cancel that", detail: (error as Error).message }),
+  });
   if (!me) return null;
 
   // How far under the live price a number sits, so it's clear how big a drop it waits for.
@@ -65,7 +73,16 @@ function LimitOrder({ card, limit, refresh }: { card: PulseCard; limit: CardData
               <span className="num text-[12.5px] text-faint">{gap > 0 ? `${gap}% below now` : "buys at the next tick"}</span>
             </div>
           </div>
-          <button type="button" aria-label="Cancel limit order" title="Cancel limit order" onClick={() => clear.mutate()} className="flex h-8 w-8 shrink-0 items-center justify-center px-cut text-mute hover:bg-bone/[0.07] hover:text-loss"><X size={16} aria-hidden="true" /></button>
+          <button
+            type="button"
+            aria-label={clear.isPending ? "Cancelling limit order" : "Cancel limit order"}
+            title="Cancel limit order"
+            disabled={clear.isPending}
+            onClick={() => clear.mutate()}
+            className="flex h-11 w-11 shrink-0 items-center justify-center px-cut text-mute hover:bg-bone/[0.07] hover:text-loss disabled:cursor-wait disabled:opacity-60 sm:h-8 sm:w-8"
+          >
+            {clear.isPending ? <LoaderCircle size={16} className="animate-spin" aria-hidden="true" /> : <X size={16} aria-hidden="true" />}
+          </button>
         </div>
       </div>
     );
@@ -91,9 +108,10 @@ function LimitOrder({ card, limit, refresh }: { card: PulseCard; limit: CardData
           <button
             key={pick.pct}
             type="button"
+            disabled={set.isPending}
             onClick={() => setValue(pick.value)}
             aria-pressed={value === pick.value}
-            className={`num h-8 flex-1 px-cut text-[12.5px] font-semibold transition-colors ${value === pick.value ? "bg-teal/20 text-teal" : "bg-raised text-mute hover:text-bone"}`}
+            className={`num h-8 min-h-11 flex-1 px-cut text-[13px] font-semibold transition-colors disabled:opacity-60 sm:min-h-0 ${value === pick.value ? "bg-teal/20 text-teal" : "bg-raised text-mute hover:text-bone"}`}
           >
             -{pick.pct}%
           </button>
@@ -107,6 +125,7 @@ function LimitOrder({ card, limit, refresh }: { card: PulseCard; limit: CardData
             inputMode="decimal"
             aria-label="Limit price"
             placeholder="Your price"
+            disabled={set.isPending}
             value={value}
             onChange={(e) => setValue(e.target.value.replace(/[^\d.]/g, ""))}
           />
@@ -119,23 +138,27 @@ function LimitOrder({ card, limit, refresh }: { card: PulseCard; limit: CardData
         <button
           type="submit"
           disabled={!ready}
-          className="pixel flex h-10 shrink-0 items-center px-cut bg-teal/15 px-4 text-[12px] uppercase leading-none text-teal transition-colors hover:bg-teal hover:text-ink disabled:cursor-not-allowed disabled:bg-raised disabled:text-faint"
+          className="pixel flex h-10 min-h-11 shrink-0 items-center px-cut bg-teal/15 px-4 text-[12px] uppercase leading-none text-teal transition-colors hover:bg-teal hover:text-ink disabled:cursor-not-allowed disabled:bg-raised disabled:text-faint sm:min-h-0"
         >
-          Set
+          {set.isPending ? "Setting…" : "Set"}
         </button>
       </div>
     </form>
   );
 }
 
-/** Says why a chart has stopped, in the toolbar where it can never cover the data. */
-function ChartStatus({ card, locked }: { card: PulseCard; locked: boolean }) {
-  if (!card.boughtBy && !locked) return null;
+function CardPageSkeleton() {
   return (
-    <span className={`reveal flex h-9 min-w-0 items-center gap-1.5 px-cut border px-2.5 text-[13.5px] font-semibold text-bone ${card.boughtBy ? "border-teal/40 bg-teal/10" : "border-gold/40 bg-gold/10"}`}>
-      {card.boughtBy ? <BadgeCheck size={16} className="shrink-0 text-teal" aria-hidden="true" /> : <Lock size={15} className="shrink-0 text-gold" aria-hidden="true" />}
-      <span className="truncate">{card.boughtBy ? <>Bought by <span className="num">{shortAddress(card.boughtBy)}</span> for <span className="num">{money(card.price)}</span></> : <>Price locked at <span className="num">{money(card.price)}</span></>}</span>
-    </span>
+    <div className="h-full overflow-y-auto p-2 sm:p-3" role="status">
+      <span className="sr-only">Loading card</span>
+      <div className="mx-auto flex max-w-[1360px] animate-pulse flex-col gap-2">
+        <div className="slab h-28" />
+        <div className="grid grid-cols-1 gap-2 lg:grid-cols-[minmax(0,1fr)_340px]">
+          <div className="slab h-[320px] sm:h-[460px]" />
+          <div className="slab hidden h-[460px] lg:block" />
+        </div>
+      </div>
+    </div>
   );
 }
 
@@ -171,11 +194,14 @@ function BuyPanel({ card, limit, refresh }: { card: PulseCard; limit: CardData["
         <>
           <div className="text-center">
             <div className="text-[13px] font-medium text-faint">{moved ? "Locked price" : "Price right now"}</div>
-            <div className="num text-[34px] font-bold leading-tight">{money(card.price)}</div>
+            <div className="mt-1 flex items-baseline justify-center gap-2.5">
+              <div className="num text-[34px] font-bold leading-tight">{money(card.price)}</div>
+              <PctBadge pct={changePct(card.price, card.openPrice)} big />
+            </div>
           </div>
           <div className="hidden lg:block"><BuyAction card={card} /></div>
           <p className="text-center text-[13px] text-faint">First click gets the card at the price that second. It goes straight to your connected wallet.</p>
-          {!moved ? <LimitOrder card={card} limit={limit} refresh={refresh} /> : null}
+          {!moved ? <div className="hidden lg:block"><LimitOrder card={card} limit={limit} refresh={refresh} /></div> : null}
           {me ? (
             <div className="flex justify-between text-[13px] text-faint">
               <span>Available</span>
@@ -192,13 +218,23 @@ export default function LiveCardPage() {
   const { id } = useParams<{ id: string }>();
   const client = useQueryClient();
   const now = useNow();
+  const me = useMe();
+  const connected = useLive((s) => s.connected);
+  const [limitOpen, setLimitOpen] = useState(false);
   const query = useQuery({ queryKey: ["pulse-card", id], queryFn: () => api<CardData>(`/pulse/drops/${id}`), refetchInterval: 30_000 });
   const live = usePulse((s) => s.cards[id]);
   const moveSec = usePulse((s) => s.moveSec);
 
-  if (query.isError) return <Empty title="Card not found">It may have been cleared after it finished.</Empty>;
+  if (query.isError) return (
+    <div className="grid h-full place-items-center p-4">
+      <Empty title="Couldn’t load this card">
+        <p>It may have been cleared after it finished, or the connection may have dropped.</p>
+        <div className="mt-4"><Button onClick={() => void query.refetch()}>Try again</Button></div>
+      </Empty>
+    </div>
+  );
   const data = query.data;
-  if (!data) return <div className="p-6 text-faint">Loading card</div>;
+  if (!data) return <CardPageSkeleton />;
 
   const card = live ?? data.drop;
   const name = cardName(card);
@@ -208,14 +244,15 @@ export default function LiveCardPage() {
   const locked = sold || left <= 0;
   const hidden = card.kind === "hidden" && !card.card;
   const refresh = () => void client.invalidateQueries({ queryKey: ["pulse-card", id] });
+  const connection = !connected ? "Reconnecting · price may be stale" : query.isRefetching ? "Updating" : "Live";
 
   return (
     <div className="h-full overflow-y-auto">
-      <div className="mx-auto w-full max-w-[1360px] flex flex-col gap-2 px-2 pb-2 sm:px-3">
+      <div className="mx-auto flex w-full max-w-[1360px] flex-col gap-2 px-2 pb-2 sm:px-3">
         <section className="slab p-3">
           <div className="flex flex-wrap items-center gap-x-7 gap-y-3">
             <div className="flex min-w-0 flex-1 basis-[280px] items-center gap-3">
-              <Link href="/" aria-label="Back to Pulse" className="flex h-10 w-10 shrink-0 items-center justify-center px-cut bg-raised text-mute hover:text-bone"><ArrowLeft size={18} aria-hidden="true" /></Link>
+              <Link href="/" aria-label="Back to Pulse" className="flex h-11 w-11 shrink-0 items-center justify-center px-cut bg-raised text-mute hover:text-bone sm:h-10 sm:w-10"><ArrowLeft size={18} aria-hidden="true" /></Link>
               {hidden ? <SealedThumb size={46} /> : <CardThumb src={card.card?.image} alt={name} size={46} />}
               <div className="min-w-0">
                 <h1 className="truncate text-[17px] font-bold leading-tight tracking-tight sm:text-[19px]">{name}</h1>
@@ -232,15 +269,14 @@ export default function LiveCardPage() {
               <HeaderStat label="High" value={money(card.high, true)} tone="text-teal" />
               <HeaderStat label="Low" value={money(card.low, true)} tone="text-loss" />
             </dl>
-            <div className="flex items-center gap-4">
-              <div>
-                <div className="num text-[26px] font-bold leading-none">{money(card.price)}</div>
-                <div className="mt-1"><PctBadge pct={changePct(card.price, card.openPrice)} /></div>
-              </div>
+            <div className="flex flex-wrap items-center gap-3">
+              <span role="status" className={`flex items-center gap-1.5 text-[12px] ${connected ? "text-faint" : "text-loss"}`}>
+                <span className={`h-1.5 w-1.5 ${connected ? "bg-teal" : "bg-loss"}`} />{connection}
+              </span>
               <div className={`flex items-center gap-2 px-cut px-3 py-2 ${sold ? "bg-teal/12" : locked ? "bg-bone/[0.07]" : left < 45 ? "bg-loss/15" : "bg-volt/15"}`}>
                 {sold ? <BadgeCheck size={18} className="text-teal" aria-hidden="true" /> : locked ? <Lock size={18} className="text-gold" aria-hidden="true" /> : <Clock3 size={18} className={left < 45 ? "text-loss" : "text-gold"} aria-hidden="true" />}
                 <div>
-                  <div className="text-[12px] font-medium text-mute">{sold ? "Status" : locked ? "Status" : "Locks in"}</div>
+                  <div className="text-[12px] font-medium text-mute">{sold || locked ? "Status" : "Locks in"}</div>
                   <div className={`num text-[17px] font-bold leading-tight ${sold || locked ? "" : left < 45 ? "text-loss" : "text-gold"}`}>{sold ? "Sold" : locked ? "Locked" : clock(left)}</div>
                 </div>
               </div>
@@ -249,17 +285,25 @@ export default function LiveCardPage() {
         </section>
 
         <div className="grid grid-cols-1 gap-2 lg:grid-cols-[minmax(0,1fr)_340px]">
-          <section className="slab relative h-[380px] min-w-0 overflow-hidden sm:h-[480px] lg:h-[calc(100dvh-262px)] lg:min-h-[460px] xl:h-[calc(100dvh-204px)]" aria-label="Chart">
-            <MarketChart key={card.id} card={card} prices={data.prices} limit={data.limit?.maxPrice ?? null} moveSec={moveSec} status={<ChartStatus card={card} locked={locked} />} />
+          <section className="slab relative h-[320px] min-w-0 overflow-hidden sm:h-[460px] lg:h-[calc(100dvh-262px)] lg:min-h-[460px] xl:h-[calc(100dvh-204px)]" aria-label="Chart">
+            <MarketChart key={card.id} card={card} prices={data.prices} limit={data.limit?.maxPrice ?? null} moveSec={moveSec} />
           </section>
           <BuyPanel card={card} limit={data.limit} refresh={refresh} />
         </div>
         {!sold ? (
-          <div className="sticky bottom-0 z-30 -mx-2 -mb-2 flex items-center gap-3 border-t border-line bg-surface/95 px-2 py-2 backdrop-blur sm:-mx-3 sm:px-3 lg:hidden">
-            <div className="min-w-0 flex-1"><BuyAction card={card} /></div>
+          <div className="sticky bottom-0 z-30 -mx-2 -mb-2 flex flex-col gap-2 border-t border-line bg-surface/95 px-2 py-2 backdrop-blur sm:-mx-3 sm:px-3 lg:hidden">
+            <div className="flex items-center justify-between gap-3 px-1 text-[12px]">
+              <span className="flex min-w-0 items-baseline gap-2"><span className="text-faint">Current</span><span className="num font-semibold text-bone">{money(card.price)}</span><PctBadge pct={changePct(card.price, card.openPrice)} /></span>
+              <span className={`num shrink-0 ${locked ? "text-faint" : left < 45 ? "text-loss" : "text-gold"}`}>{locked ? "Price locked" : `Locks in ${clock(left)}`}</span>
+            </div>
+            <div className="flex items-center gap-2">
+              <div className="min-w-0 flex-1"><BuyAction card={card} /></div>
+              {!locked && me ? <Button className="h-12 px-4 text-[12px]" onClick={() => setLimitOpen(true)}>Limit</Button> : null}
+            </div>
           </div>
         ) : null}
       </div>
+      {limitOpen ? <Sheet title="Limit order" onClose={() => setLimitOpen(false)}><div className="p-4 pt-1"><LimitOrder card={card} limit={data.limit} refresh={refresh} /></div></Sheet> : null}
     </div>
   );
 }

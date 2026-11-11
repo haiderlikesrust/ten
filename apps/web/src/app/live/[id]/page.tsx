@@ -5,14 +5,14 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { ArrowLeft, BadgeCheck, Clock3, LoaderCircle, Lock, X } from "lucide-react";
 import Link from "next/link";
 import { useParams } from "next/navigation";
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Button, CardThumb, Empty, Grade, Pill, Rarity, Sheet, inputClass } from "@/components/bits";
 import { BuyButton, PctBadge, SealedThumb, cardName } from "@/components/market";
 import { MarketChart } from "@/components/MarketChart";
 import { api } from "@/lib/api";
 import { clock, money, packLabel } from "@/lib/format";
 import { useLive } from "@/lib/live";
-import { changePct, usePulse, type PulseCard } from "@/lib/pulse";
+import { changePct, limitGap, usePulse, type PulseCard } from "@/lib/pulse";
 import { useMe } from "@/lib/session";
 import { useNow, useUi } from "@/lib/ui";
 import { sized } from "@/lib/image";
@@ -34,8 +34,17 @@ function HeaderStat({ label, value, tone }: { label: string; value: string; tone
 
 const QUICK_DROPS = [10, 25, 50];
 
+/**
+ * A typed price, kept to digits and one decimal point with cents. A comma counts as the point: many phones offer
+ * only a comma on the number pad, and dropping it would turn 12,50 into 1250, an order that buys at once.
+ */
+function cleanPrice(raw: string): string {
+  const [whole = "", ...rest] = raw.replace(/,/g, ".").replace(/[^\d.]/g, "").split(".");
+  return rest.length ? `${whole}.${rest.join("").slice(0, 2)}` : whole;
+}
+
 /** An order to buy the second the price falls to a number. Teal, like its dotted line on the chart. */
-function LimitOrder({ card, limit, refresh }: { card: PulseCard; limit: CardData["limit"]; refresh: () => void }) {
+function LimitOrder({ card, limit, refresh, onSet }: { card: PulseCard; limit: CardData["limit"]; refresh: () => void; onSet?: () => void }) {
   const me = useMe();
   const toast = useUi((s) => s.toast);
   const [value, setValue] = useState("");
@@ -45,6 +54,7 @@ function LimitOrder({ card, limit, refresh }: { card: PulseCard; limit: CardData
       setValue("");
       toast({ tone: "ok", title: "Limit order set" });
       refresh();
+      onSet?.();
     },
     onError: (error) => toast({ tone: "bad", title: "Could not set that", detail: (error as Error).message }),
   });
@@ -58,11 +68,9 @@ function LimitOrder({ card, limit, refresh }: { card: PulseCard; limit: CardData
   });
   if (!me) return null;
 
-  // How far under the live price a number sits, so it's clear how big a drop it waits for.
-  const below = (micros: number) => Math.round((1 - micros / card.price) * 100);
-
   if (limit) {
-    const gap = below(limit.maxPrice);
+    // How far under the live price the order sits, so it's clear how big a drop it waits for.
+    const gap = limitGap(limit.maxPrice, card.price);
     return (
       <div className="flex items-center gap-3 border-t border-line pt-3">
         <div className="flex min-w-0 flex-1 items-center gap-3 px-cut border border-teal/40 bg-teal/10 px-3 py-2.5" role="status">
@@ -70,7 +78,7 @@ function LimitOrder({ card, limit, refresh }: { card: PulseCard; limit: CardData
             <div className="pixel text-[11px] uppercase leading-none text-teal">Limit order open</div>
             <div className="mt-1.5 flex flex-wrap items-baseline gap-x-2">
               <span className="num text-[20px] font-bold leading-none">{money(limit.maxPrice)}</span>
-              <span className="num text-[12.5px] text-faint">{gap > 0 ? `${gap}% below now` : "buys at the next tick"}</span>
+              <span className="num text-[12.5px] text-faint">{gap ? `${gap} below now` : "buys at the next tick"}</span>
             </div>
           </div>
           <button
@@ -90,6 +98,7 @@ function LimitOrder({ card, limit, refresh }: { card: PulseCard; limit: CardData
 
   const target = Math.round(Number(value) * 1e6);
   const ready = target > 0 && !set.isPending;
+  const gap = limitGap(target, card.price);
   const picks = QUICK_DROPS.map((pct) => ({ pct, value: ((card.price * (1 - pct / 100)) / 1e6).toFixed(2) }));
   return (
     <form
@@ -127,11 +136,11 @@ function LimitOrder({ card, limit, refresh }: { card: PulseCard; limit: CardData
             placeholder="Your price"
             disabled={set.isPending}
             value={value}
-            onChange={(e) => setValue(e.target.value.replace(/[^\d.]/g, ""))}
+            onChange={(e) => setValue(cleanPrice(e.target.value))}
           />
           {target > 0 ? (
-            <span className={`num pointer-events-none absolute right-3 top-1/2 z-10 -translate-y-1/2 text-[12px] ${below(target) > 0 ? "text-faint" : "text-gold"}`}>
-              {below(target) > 0 ? `${below(target)}% below` : "buys now"}
+            <span className={`num pointer-events-none absolute right-3 top-1/2 z-10 -translate-y-1/2 text-[12px] ${gap ? "text-faint" : "text-gold"}`}>
+              {gap ? `${gap} below` : "buys now"}
             </span>
           ) : null}
         </div>
@@ -168,7 +177,7 @@ function BuyAction({ card }: { card: PulseCard }) {
   return <Button tone="primary" className="h-14 w-full text-[15px]" onClick={() => useUi.getState().setConnectOpen(true)}>Connect to buy</Button>;
 }
 
-function BuyPanel({ card, limit, refresh }: { card: PulseCard; limit: CardData["limit"]; refresh: () => void }) {
+function BuyPanel({ card, limit, refresh, ended }: { card: PulseCard; limit: CardData["limit"]; refresh: () => void; ended: boolean }) {
   const me = useMe();
   const now = useNow();
   const name = cardName(card);
@@ -190,6 +199,12 @@ function BuyPanel({ card, limit, refresh }: { card: PulseCard; limit: CardData["
           <div className="text-mute">Bought by <span className="num font-semibold text-bone">{shortAddress(card.boughtBy)}</span></div>
           <div className="num text-[22px] font-bold">{money(card.price)}</div>
         </div>
+      ) : ended ? (
+        <div className="flex flex-col items-center gap-1.5 px-cut bg-bone/[0.05] px-3 py-4 text-center">
+          <Lock size={22} className="text-faint" aria-hidden="true" />
+          <div className="text-[16px] font-bold">Ended</div>
+          <div className="text-mute">Nobody bought this card before its time ran out.</div>
+        </div>
       ) : (
         <>
           <div className="text-center">
@@ -201,7 +216,8 @@ function BuyPanel({ card, limit, refresh }: { card: PulseCard; limit: CardData["
           </div>
           <div className="hidden lg:block"><BuyAction card={card} /></div>
           <p className="text-center text-[13px] text-faint">First click gets the card at the price that second. It goes straight to your connected wallet.</p>
-          {!moved ? <div className="hidden lg:block"><LimitOrder card={card} limit={limit} refresh={refresh} /></div> : null}
+          {/* A new order needs a moving price. One already open stays in view after the lock, where it can still fill, so it can be cancelled. */}
+          {!moved || limit ? <div className="hidden lg:block"><LimitOrder card={card} limit={limit} refresh={refresh} /></div> : null}
           {me ? (
             <div className="flex justify-between text-[13px] text-faint">
               <span>Available</span>
@@ -225,7 +241,17 @@ export default function LiveCardPage() {
   const live = usePulse((s) => s.cards[id]);
   const moveSec = usePulse((s) => s.moveSec);
 
-  if (query.isError) return (
+  // The live board drops a card the moment it ends. Read it again then, so this page shows how it ended
+  // and stops offering a Buy button that can only answer "too slow".
+  const wasLive = useRef(false);
+  const { refetch } = query;
+  useEffect(() => {
+    if (wasLive.current && !live) void refetch();
+    wasLive.current = !!live;
+  }, [live, refetch]);
+
+  // A refetch that fails keeps the last good card: a blip mid-auction must not blank the chart and the Buy button.
+  if (query.isError && !query.data) return (
     <div className="grid h-full place-items-center p-4">
       <Empty title="Couldn’t load this card">
         <p>It may have been cleared after it finished, or the connection may have dropped.</p>
@@ -242,8 +268,12 @@ export default function LiveCardPage() {
   const end = card.movesUntil ? new Date(card.movesUntil).getTime() : now;
   const left = Math.max(0, (end - now) / 1000);
   const locked = sold || left <= 0;
+  // Expired, sold back or skipped with no buyer: nothing here can be bought any more.
+  const ended = !sold && card.state !== "LIVE";
   const hidden = card.kind === "hidden" && !card.card;
   const refresh = () => void client.invalidateQueries({ queryKey: ["pulse-card", id] });
+  // On phones the limit order lives in a sheet. It closes itself once there is nothing left to set or cancel.
+  const sheetOpen = limitOpen && !sold && !ended && (!locked || !!data.limit);
   const connection = !connected ? "Reconnecting · price may be stale" : query.isRefetching ? "Updating" : "Live";
 
   return (
@@ -273,11 +303,11 @@ export default function LiveCardPage() {
               <span role="status" className={`flex items-center gap-1.5 text-[12px] ${connected ? "text-faint" : "text-loss"}`}>
                 <span className={`h-1.5 w-1.5 ${connected ? "bg-teal" : "bg-loss"}`} />{connection}
               </span>
-              <div className={`flex items-center gap-2 px-cut px-3 py-2 ${sold ? "bg-teal/12" : locked ? "bg-bone/[0.07]" : left < 45 ? "bg-loss/15" : "bg-volt/15"}`}>
-                {sold ? <BadgeCheck size={18} className="text-teal" aria-hidden="true" /> : locked ? <Lock size={18} className="text-gold" aria-hidden="true" /> : <Clock3 size={18} className={left < 45 ? "text-loss" : "text-gold"} aria-hidden="true" />}
+              <div className={`flex items-center gap-2 px-cut px-3 py-2 ${sold ? "bg-teal/12" : locked || ended ? "bg-bone/[0.07]" : left < 45 ? "bg-loss/15" : "bg-volt/15"}`}>
+                {sold ? <BadgeCheck size={18} className="text-teal" aria-hidden="true" /> : ended ? <Lock size={18} className="text-faint" aria-hidden="true" /> : locked ? <Lock size={18} className="text-gold" aria-hidden="true" /> : <Clock3 size={18} className={left < 45 ? "text-loss" : "text-gold"} aria-hidden="true" />}
                 <div>
-                  <div className="text-[12px] font-medium text-mute">{sold || locked ? "Status" : "Locks in"}</div>
-                  <div className={`num text-[17px] font-bold leading-tight ${sold || locked ? "" : left < 45 ? "text-loss" : "text-gold"}`}>{sold ? "Sold" : locked ? "Locked" : clock(left)}</div>
+                  <div className="text-[12px] font-medium text-mute">{sold || locked || ended ? "Status" : "Locks in"}</div>
+                  <div className={`num text-[17px] font-bold leading-tight ${sold || locked || ended ? "" : left < 45 ? "text-loss" : "text-gold"}`}>{sold ? "Sold" : ended ? "Ended" : locked ? "Locked" : clock(left)}</div>
                 </div>
               </div>
             </div>
@@ -288,9 +318,9 @@ export default function LiveCardPage() {
           <section className="slab relative h-[320px] min-w-0 overflow-hidden sm:h-[460px] lg:h-[calc(100dvh-262px)] lg:min-h-[460px] xl:h-[calc(100dvh-204px)]" aria-label="Chart">
             <MarketChart key={card.id} card={card} prices={data.prices} limit={data.limit?.maxPrice ?? null} moveSec={moveSec} />
           </section>
-          <BuyPanel card={card} limit={data.limit} refresh={refresh} />
+          <BuyPanel card={card} limit={data.limit} refresh={refresh} ended={ended} />
         </div>
-        {!sold ? (
+        {!sold && !ended ? (
           <div className="sticky bottom-0 z-30 -mx-2 -mb-2 flex flex-col gap-2 border-t border-line bg-surface/95 px-2 py-2 backdrop-blur sm:-mx-3 sm:px-3 lg:hidden">
             <div className="flex items-center justify-between gap-3 px-1 text-[12px]">
               <span className="flex min-w-0 items-baseline gap-2"><span className="text-faint">Current</span><span className="num font-semibold text-bone">{money(card.price)}</span><PctBadge pct={changePct(card.price, card.openPrice)} /></span>
@@ -298,12 +328,12 @@ export default function LiveCardPage() {
             </div>
             <div className="flex items-center gap-2">
               <div className="min-w-0 flex-1"><BuyAction card={card} /></div>
-              {!locked && me ? <Button className="h-12 px-4 text-[12px]" onClick={() => setLimitOpen(true)}>Limit</Button> : null}
+              {me && (!locked || data.limit) ? <Button className="h-12 px-4 text-[12px]" onClick={() => setLimitOpen(true)}>{data.limit ? "Limit set" : "Limit"}</Button> : null}
             </div>
           </div>
         ) : null}
       </div>
-      {limitOpen ? <Sheet title="Limit order" onClose={() => setLimitOpen(false)}><div className="p-4 pt-1"><LimitOrder card={card} limit={data.limit} refresh={refresh} /></div></Sheet> : null}
+      {sheetOpen ? <Sheet title="Limit order" onClose={() => setLimitOpen(false)}><div className="p-4 pt-1"><LimitOrder card={card} limit={data.limit} refresh={refresh} onSet={() => setLimitOpen(false)} /></div></Sheet> : null}
     </div>
   );
 }

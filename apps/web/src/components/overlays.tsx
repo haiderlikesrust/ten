@@ -46,7 +46,8 @@ export function Toasts() {
           <span className="mt-px shrink-0">{TOAST_ICON[toast.tone]}</span>
           <span className="min-w-0">
             <span className="block font-bold">{toast.title}</span>
-            {toast.detail ? <span className="block truncate text-[13px] text-mute">{toast.detail}</span> : null}
+            {/* Wraps, because an error's detail is often the instruction: what to check before trying again. */}
+            {toast.detail ? <span className="line-clamp-3 text-[13px] text-mute [overflow-wrap:anywhere]">{toast.detail}</span> : null}
           </span>
         </button>
       ))}
@@ -56,19 +57,23 @@ export function Toasts() {
 
 export function RevealModal() {
   const reveal = useUi((s) => s.reveal);
+  const waiting = useUi((s) => s.revealQueue.length);
   const setReveal = useUi((s) => s.setReveal);
+  const clearReveals = useUi((s) => s.clearReveals);
   if (!reveal) return null;
   const { card, insuredValue, paid, rarity, label, soldBack } = reveal;
-  const name = String(card.name ?? "Common sold back");
+  // A card can arrive before its name or photo. Only one that really was sold back may say so.
+  const name = String(card.name ?? (soldBack ? "Card sold back" : "Graded card"));
   return (
-    <Modal onClose={() => setReveal(null)} label={label}>
+    // Keyed, so the next card in a batch plays its own entrance instead of swapping in silently.
+    <Modal key={reveal.id} onClose={() => setReveal(null)} label={label}>
       <div className={`win-flash pointer-events-none fixed inset-0 ${rarity === "epic" ? "bg-epic/30" : "bg-volt/20"}`} />
       <div className={`slab reveal flex flex-col items-center border-2 p-5 text-center ${rarityBorder(rarity)} ${rarityWash(rarity)}`}>
         <div className="pixel text-[15px] uppercase text-gold">{label}</div>
         {card.image ? (
           <img src={sized(card.image, 320)} alt={name} className="mt-3 max-h-[42dvh] max-w-full px-cut object-contain" />
         ) : (
-          <div className="mt-3 flex h-[170px] w-full items-center justify-center px-cut bg-raised text-mute">Turbo sold this Common back</div>
+          <div className="mt-3 flex h-[170px] w-full items-center justify-center px-cut bg-raised text-mute">{soldBack ? "This card was sold back for you" : "The photo is not in yet"}</div>
         )}
         <div className="mt-3 line-clamp-2 text-[18px] font-bold leading-tight">{cardTitle(name)}</div>
         <div className="mt-2 flex items-center gap-1.5">
@@ -86,13 +91,19 @@ export function RevealModal() {
           </div>
         </div>
         <div className="mt-3 flex w-full gap-2">
-          <Link href="/portfolio" onClick={() => setReveal(null)} className="flex h-11 flex-1 items-center justify-center px-cut bg-raised font-semibold hover:bg-raised-2">
+          <Link href="/portfolio" onClick={clearReveals} className="flex h-11 flex-1 items-center justify-center px-cut bg-raised font-semibold hover:bg-raised-2">
             View portfolio
           </Link>
           <Button tone="snipe" className="h-11 flex-1" onClick={() => setReveal(null)}>
-            Keep going
+            {waiting > 0 ? "Next card" : "Keep going"}
           </Button>
         </div>
+        {waiting > 0 ? (
+          <div className="mt-2.5 flex items-center gap-2 text-[13px] text-faint">
+            <span><span className="num">{waiting}</span> more to see</span>
+            <button type="button" onClick={clearReveals} className="text-mute underline underline-offset-2 hover:text-bone">Skip them</button>
+          </div>
+        ) : null}
       </div>
     </Modal>
   );

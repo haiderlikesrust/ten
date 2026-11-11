@@ -117,6 +117,15 @@ describe("pack ladder", () => {
     const only500 = S.ladder.map((t) => ({ ...t, enabled: t.price === usd(500) }));
     expect(ladderMix(only500, all, usd(4_000), usd(500)).map((x) => x.code)).toEqual(["pokemon_500"]);
   });
+  it("leaves out a size that costs more than what is left of the daily cap", () => {
+    const priced = (room: number) => [...new Set(ladderMix(S.ladder, all, usd(4_000), null, usd(room)).map((x) => all.find((a) => a.code === x.code)!.price / 1e6))];
+    // One $500 pack used to be able to carry a $2,500 day to $3,000.
+    expect(priced(120)).toEqual([25, 50, 100]);
+    expect(priced(25)).toEqual([25]);
+    expect(priced(24)).toEqual([]);
+    expect(priced(500)).toEqual([25, 50, 100, 250, 500]);
+  });
+
   it("leaves out sizes that are off, unaffordable, or have no machine that can sell", () => {
     const off = S.ladder.map((t) => (t.price === usd(25) ? { ...t, enabled: false } : t));
     expect(ladderMix(off, all, usd(25), null)).toEqual([]);

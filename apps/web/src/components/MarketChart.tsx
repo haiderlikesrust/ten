@@ -2,8 +2,8 @@
 
 import { useEffect, useRef, useState } from "react";
 import { baseChartOptions, chartColors, formatPrice, localTime, withAlpha } from "@/lib/chart";
-import { onPriceTick, type PulseCard } from "@/lib/pulse";
-import { useUi } from "@/lib/ui";
+import { limitGap, onPriceTick, type PulseCard } from "@/lib/pulse";
+import { serverNow, useUi } from "@/lib/ui";
 import { Segmented } from "./bits";
 
 interface Bar {
@@ -17,6 +17,8 @@ interface Bar {
 type ChartMode = "line" | "candles";
 
 const FRAMES = [1, 5, 15, 30];
+/** The line has no timeframe picker, so it always draws at this step whatever the candles were last set to. */
+const LINE_STEP = 5;
 /** A price change eases in over this long. Shorter than a tick, so it never falls behind. */
 const GLIDE_MS = 650;
 
@@ -61,6 +63,10 @@ function createBand(open: number) {
       const span = target.max - target.min;
       if (low < target.min + span * 0.03) target = { ...target, min: Math.max(0, low - span * 0.4) };
       if (high > target.max - span * 0.03) target = { ...target, max: high + span * 0.4 };
+    },
+    /** Jumps straight to the target range, for when nothing animates. */
+    snap() {
+      if (target) shown = { ...target };
     },
     step(): boolean {
       if (!target || !shown) return false;
@@ -114,7 +120,10 @@ export function MarketChart({ card, prices, limit, moveSec }: { card: PulseCard;
   const start = Math.floor(opens / 1000);
   const stopped = !!card.stoppedAt;
   const boughtPrice = card.boughtBy ? card.price : null;
-  const remaining = Math.max(0, Math.ceil(moveSec - (Date.now() - opens) / 1000));
+  // How long this card's price moves. Its own length, when known: the setting can change while a card is live.
+  const total = card.movesUntil ? Math.max(1, Math.round((new Date(card.movesUntil).getTime() - opens) / 1000)) : moveSec;
+  const span = mode === "line" ? LINE_STEP : frame;
+  const remaining = Math.max(0, Math.ceil(total - (serverNow() - opens) / 1000));
   // Every price seen so far, kept across timeframe, chart-type and theme changes.
   const known = useRef(new Map<number, number>());
 
@@ -194,7 +203,7 @@ export function MarketChart({ card, prices, limit, moveSec }: { card: PulseCard;
 
       const lockAxis = () => {
         // A running chart spans the card's full time, and candles fill it from left to right.
-        const whole = Math.ceil(moveSec / frame) + 2;
+        const whole = Math.ceil(total / span) + 2;
         chart.timeScale().setVisibleLogicalRange({ from: -0.5, to: stopped ? Math.max(bars.length + 1.5, 24) : whole });
       };
 
@@ -216,8 +225,8 @@ export function MarketChart({ card, prices, limit, moveSec }: { card: PulseCard;
         const width = scale.width();
         if (!range || width <= 0 || range.to <= range.from) return;
         const x = (logical: number) => ((logical - range.from) / (range.to - range.from)) * width;
-        const lockAt = (start + moveSec - first.time) / frame;
-        const nowAt = Math.max(bars.length - 0.5, (Date.now() / 1000 - first.time) / frame);
+        const lockAt = (start + total - first.time) / span;
+        const nowAt = Math.max(bars.length - 0.5, (serverNow() / 1000 - first.time) / span);
         const right = x(lockAt);
         const left = x(Math.min(nowAt, lockAt));
         const bottom = `${scale.height()}px`;
@@ -237,7 +246,7 @@ export function MarketChart({ card, prices, limit, moveSec }: { card: PulseCard;
       };
 
       const redraw = () => {
-        bars = toBars(points, frame);
+        bars = toBars(points, span);
         byTime = new Map(bars.map((bar) => [bar.time, bar]));
         const prices = bars.flatMap((bar) => [bar.high, bar.low]);
         if (prices.length) {
@@ -247,6 +256,8 @@ export function MarketChart({ card, prices, limit, moveSec }: { card: PulseCard;
           // Only pulls the insured line into view when that keeps the price action readable.
           const near = reference !== null && reference > low * 0.6 && reference < high * 1.6;
           band.fit(near ? Math.min(low, reference) : low, near ? Math.max(high, reference) : high);
+          // A full redraw is a fresh layout, so the axis takes its range at once. Only live ticks ease it.
+          band.snap();
         }
         series.setData(seriesData(bars) as never);
         lockAxis();
@@ -284,7 +295,7 @@ export function MarketChart({ card, prices, limit, moveSec }: { card: PulseCard;
 
       const tick = (second: number, price: number) => {
         const previous = bars[bars.length - 1];
-        const time = Math.floor(second / frame) * frame;
+        const time = Math.floor(second / span) * span;
         if (!previous || time < previous.time) return merge([[second, price]]);
         points.set(second, price);
         if (glide) {
@@ -303,6 +314,9 @@ export function MarketChart({ card, prices, limit, moveSec }: { card: PulseCard;
         place();
         setLatest({ ...bar, high: Math.max(bar.high, price), low: Math.min(bar.low, price), close: price });
         if (calm || document.hidden) {
+          // Nothing animates here, so the axis must jump too. Left to the animation loop it would never widen,
+          // and with reduced motion on, a crash or a run would leave the price off the chart.
+          band.snap();
           settle(bar, price);
           series.update(seriesBar(bar) as never);
           return;
@@ -354,7 +368,7 @@ export function MarketChart({ card, prices, limit, moveSec }: { card: PulseCard;
       removed = true;
       cleanup();
     };
-  }, [boughtPrice, card.id, card.insuredValue, frame, mode, moveSec, opens, start, stopped, theme]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [boughtPrice, card.id, card.insuredValue, span, mode, total, opens, start, stopped, theme]); // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
     handle.current?.merge(toPoints(prices));
@@ -383,7 +397,7 @@ export function MarketChart({ card, prices, limit, moveSec }: { card: PulseCard;
         </div>
         <div className="flex min-w-0 flex-wrap items-center gap-x-3 gap-y-1 text-[12px] text-faint">
           {card.insuredValue ? <span className="flex items-center gap-1.5"><span className="h-0 w-3.5 border-t border-dashed border-gold" /> Insured {formatPrice(card.insuredValue / 1e6)} · {referenceGap(card.price, card.insuredValue)}</span> : null}
-          {limit ? <span className={`flex items-center gap-1.5 ${card.price <= limit ? "text-gold" : "text-teal"}`}><span className="h-0 w-3.5 border-t border-dotted border-current" /> {card.price <= limit ? "Limit reached" : `Limit ${formatPrice(limit / 1e6)} · ${referenceGap(card.price, limit)}`}</span> : null}
+          {limit ? <span className={`flex items-center gap-1.5 ${card.price <= limit ? "text-gold" : "text-teal"}`}><span className="h-0 w-3.5 border-t border-dotted border-current" /> {card.price <= limit ? "Limit reached" : `Limit ${formatPrice(limit / 1e6)} · ${limitGap(limit, card.price)} below now`}</span> : null}
         </div>
       </div>
       <div className="relative min-h-0 flex-1">

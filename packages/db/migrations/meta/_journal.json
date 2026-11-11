@@ -43,6 +43,13 @@
       "when": 1794130000000,
       "tag": "0005_treasury_moves",
       "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "7",
+      "when": 1794380000000,
+      "tag": "0006_treasury_moves_per_wallet",
+      "breakpoints": true
     }
   ]
 }

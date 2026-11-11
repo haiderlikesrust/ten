@@ -132,7 +132,8 @@ export function CardThumb({ src, alt, size = 62, tag, zoom }: { src: string | nu
 /** Heading row of a panel. */
 export function SectionTitle({ children, right, icon }: { children: ReactNode; right?: ReactNode; icon?: ReactNode }) {
   return (
-    <div className="flex h-11 shrink-0 items-center justify-between gap-2 pl-3.5 pr-2.5">
+    // At least 44px, not exactly: on phones a Segmented on the right is taller than that and would spill out.
+    <div className="flex min-h-11 shrink-0 items-center justify-between gap-2 pl-3.5 pr-2.5">
       <h2 className="pixel flex min-w-0 items-center gap-2 truncate text-[13px] uppercase leading-none text-bone">
         {icon}
         {children}

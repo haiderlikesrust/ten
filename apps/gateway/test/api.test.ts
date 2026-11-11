@@ -1,7 +1,7 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { randomUUID } from "node:crypto";
 import { DEFAULT_DROP_SETTINGS, usd } from "@gemdex/core";
-import { drops, eq, giftDraws, holdings, machines, orders, setSetting, users } from "@gemdex/db";
+import { drops, eq, getSetting, giftDraws, holdings, inArray, machines, orders, setSetting, treasuryMoves, users } from "@gemdex/db";
 import { buildServer } from "../src/server";
 import { createTestDb, type TestDb } from "../../../tools/testdb";
 
@@ -185,7 +185,16 @@ describe("treasury transfers", () => {
     expect((await send(real, { signature: "not-a-signature", wallet: "drops" })).statusCode).toBe(400);
     expect((await send(real, { signature, wallet: "vault" })).statusCode).toBe(400);
     expect((await send(real, { signature: ` ${signature} `, wallet: "drops" })).statusCode).toBe(200);
+    expect((await send(real, { signature, wallet: "drops" })).statusCode).toBe(409);
+    // Once per wallet: a transfer between the two wallets is recorded for each, and one recorded under the wrong
+    // wallet can still be recorded under the right one.
+    expect((await send(real, { signature, wallet: "cashback" })).statusCode).toBe(200);
     expect((await send(real, { signature, wallet: "cashback" })).statusCode).toBe(409);
+    // A refused one can be read again, for when it was recorded before the chain had it.
+    await t.db.update(treasuryMoves).set({ state: "REFUSED", reason: "No confirmed transaction has that signature" }).where(eq(treasuryMoves.wallet, "cashback"));
+    const again = await send(real, { signature, wallet: "cashback" });
+    expect(again.statusCode).toBe(200);
+    expect(again.json()).toMatchObject({ state: "PENDING", reason: null });
     process.env.ADMIN_WALLETS = saved;
     await real.close();
   });
@@ -310,6 +319,112 @@ describe("$TENR access minimum", () => {
       expect((await buy(headers)).statusCode).toBe(200);
     } finally {
       await setSetting(t.db, "flywheel", { accessBps: 10 });
+    }
+  });
+});
+
+describe("found in the mainnet review", () => {
+  it("admin settings refuse what the worker can't run on, and a save changes only what it was sent", async () => {
+    const headers = await login("settings_admin");
+    const patch = (key: string, payload: unknown) => app.inject({ method: "PATCH", url: `/admin/settings/${key}`, headers, payload: payload as object });
+    const refused: Record<string, unknown[]> = {
+      // A mistyped form field used to arrive as null and a blank one as 0, and both were saved as they came.
+      drops: [{ crashLo: null }, { hiddenShare: "25%" }, { ttlSec: 3_000_000 }, { ttlSec: 0 }, { winCooldownSec: -1 }, { minPrice: 0.5 }, { noSuchSetting: 1 }, { ladder: "all" }],
+      flywheel: [{ giftIntervalMin: 0 }, { claimHours: 0 }, { giftTiers: "oops" }, { giftTiers: [0] }, { accessBps: 10_001 }, { buybackEveryMin: null }, { excludedWallets: ["nope"] }],
+      cashback: [{ tiers: null }, { tiers: [{ name: "x" }] }, { snapshotsPerDay: 0 }],
+      fees: [{ maxSlippageBps: 20_000 }, { minSwapUsd: 1.5 }],
+    };
+    for (const [key, bodies] of Object.entries(refused)) {
+      for (const body of bodies) expect(`${key} ${JSON.stringify(body)} ${(await patch(key, body)).statusCode}`).toBe(`${key} ${JSON.stringify(body)} 400`);
+    }
+    // One field by itself is a valid save, and the rest stay as they were.
+    const before = await getSetting(t.db, "drops");
+    const saved = await patch("drops", { winCooldownSec: 30 });
+    expect(saved.statusCode).toBe(200);
+    expect(saved.json()).toMatchObject({ winCooldownSec: 30, ttlSec: before.ttlSec, minPrice: before.minPrice, ladder: before.ladder });
+    await setSetting(t.db, "drops", { winCooldownSec: before.winCooldownSec });
+    // Turning the access minimum off on purpose is still allowed.
+    expect((await patch("flywheel", { accessBps: 0 })).statusCode).toBe(200);
+    await setSetting(t.db, "flywheel", { accessBps: 10 });
+  });
+
+  it("keeps both of two settings saved at the same moment, and never lets a saved null replace a default", async () => {
+    for (let i = 0; i < 15; i++) {
+      await setSetting(t.db, "ops", { killSwitch: false, reconcileHold: false });
+      // Read-then-write let whichever finished last put the other's field back to what it had read.
+      await Promise.all([setSetting(t.db, "ops", { killSwitch: true }), setSetting(t.db, "ops", { reconcileHold: true })]);
+      const ops = await getSetting(t.db, "ops");
+      expect([ops.killSwitch, ops.reconcileHold]).toEqual([true, true]);
+    }
+    await setSetting(t.db, "ops", { killSwitch: false, reconcileHold: false });
+    await setSetting(t.db, "drops", { relists: 0 });
+    await t.sql`update app_settings set value = value || '{"crashLo": null, "ladder": null}'::jsonb where key = 'drops'`;
+    try {
+      const saved = await getSetting(t.db, "drops");
+      expect(saved.crashLo).toBe(DEFAULT_DROP_SETTINGS.crashLo);
+      expect(saved.ladder).toEqual(DEFAULT_DROP_SETTINGS.ladder);
+    } finally {
+      await t.sql`update app_settings set value = value - 'crashLo' - 'ladder' where key = 'drops'`;
+    }
+  });
+
+  it("only queues a send for a card the user holds in their trading wallet", async () => {
+    const headers = await login("sender");
+    const me = (await app.inject({ url: "/me", headers })).json() as { id: string };
+    const send = (nft: unknown) => app.inject({ method: "POST", url: "/orders/holding", headers, payload: { action: "send", nft, idempotencyKey: randomUUID() } });
+    const card = "So11111111111111111111111111111111111111112";
+    // Each of these used to be queued, and Tenner paid the network fee when the transfer failed.
+    expect((await send("not a solana address!!")).statusCode).toBe(400);
+    expect((await send(card)).statusCode).toBe(400);
+    await t.db.insert(holdings).values({ userId: me.id, nft: card, wallet: "connected", card: {}, source: "market", cost: 0 });
+    expect((await send(card)).statusCode).toBe(400);
+    expect(await t.db.select().from(orders).where(eq(orders.userId, me.id))).toEqual([]);
+    await t.db.update(holdings).set({ wallet: "trading" }).where(eq(holdings.userId, me.id));
+    expect((await send(card)).statusCode).toBe(200);
+  });
+
+  it("takes no limit orders while mainnet is unarmed, and keeps a card's page closed until it is for sale", async () => {
+    const headers = await login("limit_setter");
+    const now = Date.now();
+    const base = { kind: "revealed" as const, machineCode: "pokemon_25", packPrice: usd(25), commonFloor: usd(13), insuredValue: usd(25) };
+    const live = (await t.db.insert(drops).values({ ...base, state: "LIVE", price: usd(20), path: Array.from({ length: 300 }, () => usd(20)), opensAt: new Date(now - 5_000), expiresAt: new Date(now + 600_000) }).returning())[0]!;
+    const opening = (await t.db.insert(drops).values({ ...base, state: "IN_VAULT", nft: "CardAddress1111", card: { name: "Secret card" } }).returning())[0]!;
+    const main = await buildServer({ database: t, mode: "mainnet" });
+    const limit = () => main.inject({ method: "POST", url: `/pulse/drops/${live.id}/limit`, headers, payload: { maxPrice: usd(15) } });
+    try {
+      // Its pack is open but it is not on sale yet, so its page gives nothing away.
+      expect((await app.inject({ url: `/pulse/drops/${opening.id}` })).statusCode).toBe(404);
+      expect((await app.inject({ url: `/pulse/drops/${live.id}` })).statusCode).toBe(200);
+      await setSetting(t.db, "ops", { armedBy: [], armedUntil: null });
+      expect((await limit()).statusCode).toBe(503);
+      await setSetting(t.db, "ops", { armedBy: ["admin"], armedUntil: new Date(now + 3_600_000).toISOString() });
+      expect((await limit()).statusCode).toBe(200);
+    } finally {
+      await setSetting(t.db, "ops", { armedBy: [], armedUntil: null });
+      await main.close();
+      await t.db.update(drops).set({ state: "VOID" }).where(inArray(drops.id, [live.id, opening.id]));
+    }
+  });
+
+  it("answers a live stream that asks to resume from a fraction, and sends the server's clock", async () => {
+    // A resume point of 1.5 used to reach the database as it was, fail the query, and take the whole gateway down.
+    // Listening from before the socket opens, so the first message can't slip past.
+    let said!: Promise<{ topic: string; payload: { seq: number; now: number } }>;
+    const socket = await app.injectWS("/stream?lastSeq=1.5", {}, {
+      onInit(ws) {
+        said = new Promise((resolve, reject) => {
+          ws.once("message", (data: unknown) => resolve(JSON.parse(String(data))));
+          ws.once("close", () => reject(new Error("closed before saying hello")));
+        });
+      },
+    });
+    try {
+      const hello = await said;
+      expect(hello.topic).toBe("hello");
+      expect(Math.abs(hello.payload.now - Date.now())).toBeLessThan(5_000);
+      expect((await app.inject({ url: "/health" })).statusCode).toBe(200);
+    } finally {
+      socket.terminate();
     }
   });
 });

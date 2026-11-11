@@ -7,6 +7,7 @@ export const money = (micros: number | null | undefined, compact = false): strin
 const PAUSE_REASONS: Record<string, string> = {
   disabled: "new cards are turned off in Admin",
   kill_switch: "the kill switch is on",
+  not_armed: "trading is switched off for now",
   reconcile_mismatch: "the balance check found a difference",
   wallet_floor: "the Pulse pool is low",
   daily_cap: "today's spend cap is reached",

@@ -23,13 +23,53 @@ interface TierRow { price: string; unlockAt: string; weight: string; enabled: bo
 
 const toRow = (tier: PackTier): TierRow => ({ price: String(tier.price / 1e6), unlockAt: String(tier.unlockAt / 1e6), weight: String(tier.weight), enabled: tier.enabled, machines: tier.machines.join(", ") });
 
+/**
+ * A typed number, or null when it isn't one. Blank, "10%", "30s" and "1e3" are all refused: `Number()` reads a blank
+ * as 0 and the rest as NaN, which is sent as null, and either would be saved over a working setting.
+ */
+function typedNumber(raw: string | undefined, max: number): number | null {
+  const text = (raw ?? "").trim();
+  if (!/^\d+(\.\d+)?$/.test(text)) return null;
+  const n = Number(text);
+  return n <= max ? n : null;
+}
+
+/** How each Pulse setting is typed and stored: dollars as micro-USDC, percents as a share from 0 to 1, the rest whole. */
+const FIELDS = {
+  minPrice: "usd", maxPrice: "usd", crashLo: "pct", crashHi: "pct", hiddenShare: "pct", ttlSec: "whole", intervalFloorSec: "whole", winCooldownSec: "whole",
+  dailySpendCap: "usd", walletFloor: "usd", budgetPerDayFallback: "usd",
+} as const;
+type FieldKey = keyof typeof FIELDS;
+const FIELD_KEYS = Object.keys(FIELDS) as FieldKey[];
+const FIELD_LABEL: Record<FieldKey, string> = {
+  minPrice: "Min price", maxPrice: "Sealed pack max", crashLo: "Deepest crash", crashHi: "Shallowest crash", hiddenShare: "Hidden share", ttlSec: "Price moves for",
+  intervalFloorSec: "Fastest interval", winCooldownSec: "Win cooldown", dailySpendCap: "Daily spend cap", walletFloor: "Wallet floor", budgetPerDayFallback: "Fallback budget",
+};
+
+const showField = (key: FieldKey, stored: number): string => String(FIELDS[key] === "usd" ? stored / 1e6 : FIELDS[key] === "pct" ? Math.round(stored * 1e4) / 100 : stored);
+
+function readField(key: FieldKey, raw: string | undefined): number | null {
+  const kind = FIELDS[key];
+  const n = typedNumber(raw, kind === "usd" ? 1e9 : kind === "pct" ? 100 : 1e7);
+  if (n === null) return null;
+  if (kind === "usd") return Math.round(n * 1e6);
+  if (kind === "pct") return n / 100;
+  return Number.isInteger(n) ? n : null;
+}
+
+/** Whether two ladders say the same thing. Compared field by field: the database hands a saved one back with its fields in another order. */
+function sameLadder(a: PackTier[], b: PackTier[]): boolean {
+  const flat = (tier: PackTier) => [tier.price, tier.unlockAt, tier.weight, tier.enabled, tier.machines.join(",")].join("|");
+  return a.length === b.length && a.every((tier, i) => flat(tier) === flat(b[i]!));
+}
+
 function fromRow(row: TierRow): PackTier | null {
-  const price = Number(row.price);
-  const unlockAt = Number(row.unlockAt);
-  const weight = Number(row.weight);
+  const price = typedNumber(row.price, 1e6);
+  const unlockAt = typedNumber(row.unlockAt, 1e9);
+  const weight = typedNumber(row.weight, 1e6);
   const machines = row.machines.split(/[\s,]+/).map((code) => code.trim().toLowerCase()).filter(Boolean);
-  if (!(price > 0) || !(unlockAt >= 0) || !(weight >= 0) || machines.length === 0) return null;
-  return { price: usd(price), unlockAt: usd(unlockAt), weight, enabled: row.enabled, machines };
+  if (price === null || unlockAt === null || weight === null || !(price > 0) || machines.length === 0 || machines.some((code) => !/^[a-z0-9_]{1,40}$/.test(code))) return null;
+  return { price: Math.round(price * 1e6), unlockAt: Math.round(unlockAt * 1e6), weight, enabled: row.enabled, machines };
 }
 
 /**
@@ -172,21 +212,24 @@ export default function AdminPage() {
   const query = useQuery({ queryKey: ["admin"], enabled: !!me?.isAdmin, queryFn: () => api<Overview>("/admin/overview"), refetchInterval: 10_000 });
   const [form, setForm] = useState<Record<string, string>>({});
   const [ladder, setLadder] = useState<TierRow[]>([]);
+  // True from the first edit until a save or a discard. The page refetches every 10 seconds, and a refetch must
+  // never wipe what is being typed; while nothing is being typed, every change made elsewhere shows at once.
+  const [dirty, setDirty] = useState(false);
 
   const s = query.data?.settings.drops;
+  const stored = s ? JSON.stringify(s) : "";
   useEffect(() => {
-    if (!s) return;
-    setForm({
-      minPrice: String(s.minPrice / 1e6), maxPrice: String(s.maxPrice / 1e6), crashLo: String(s.crashLo * 100), crashHi: String(s.crashHi * 100),
-      hiddenShare: String(s.hiddenShare * 100), intervalFloorSec: String(s.intervalFloorSec), ttlSec: String(s.ttlSec), winCooldownSec: String(s.winCooldownSec),
-      dailySpendCap: String(s.dailySpendCap / 1e6), walletFloor: String(s.walletFloor / 1e6), budgetPerDayFallback: String(s.budgetPerDayFallback / 1e6),
-    });
+    if (!s || dirty) return;
+    setForm(Object.fromEntries(FIELD_KEYS.map((key) => [key, showField(key, s[key])])));
     setLadder(s.ladder.map(toRow));
-  }, [s?.maxPrice, s?.minPrice, s?.hiddenShare, s?.winCooldownSec, JSON.stringify(s?.ladder)]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [stored, dirty]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const ops = useMutation({
     mutationFn: (body: { killSwitch?: boolean; reconcileHold?: boolean }) => api("/admin/ops", { body }),
+    // Returning the refetch keeps the buttons disabled until the page shows the new state. A second click
+    // before then would read the old state and switch it straight back.
     onSuccess: () => client.invalidateQueries({ queryKey: ["admin"] }),
+    onError: (error) => toast({ tone: "bad", title: "Could not change that", detail: (error as Error).message }),
   });
   // Mainnet signs nothing until an admin arms it, and each arm lasts two hours.
   const arm = useMutation({
@@ -198,23 +241,28 @@ export default function AdminPage() {
     onError: (error) => toast({ tone: "bad", title: (error as Error).message }),
   });
   const save = useMutation({
-    mutationFn: () => {
-      const n = (key: string) => Number(form[key]);
+    mutationFn: async () => {
+      if (!s) throw new Error("Settings have not loaded yet");
+      // Only what changed is sent, so a save never puts back a setting someone else changed in the meantime.
+      const body: Record<string, unknown> = {};
+      for (const key of FIELD_KEYS) {
+        const value = readField(key, form[key]);
+        if (value === null) throw new Error(`${FIELD_LABEL[key]} needs a plain number, with no % or letters`);
+        if (Math.abs(value - s[key]) > 1e-9) body[key] = value;
+      }
       const tiers = ladder.map(fromRow);
       if (tiers.length === 0 || tiers.some((tier) => !tier)) throw new Error("Each pack size needs a price, an amount, a weight and at least one machine");
-      return api("/admin/settings/drops", {
-        method: "PATCH",
-        body: {
-          minPrice: usd(n("minPrice")), maxPrice: usd(n("maxPrice")), crashLo: n("crashLo") / 100, crashHi: n("crashHi") / 100, hiddenShare: n("hiddenShare") / 100,
-          intervalFloorSec: n("intervalFloorSec"), ttlSec: n("ttlSec"), winCooldownSec: n("winCooldownSec"), dailySpendCap: usd(n("dailySpendCap")), walletFloor: usd(n("walletFloor")),
-          budgetPerDayFallback: usd(n("budgetPerDayFallback")),
-          ladder: [...(tiers as PackTier[])].sort((a, b) => a.price - b.price),
-        },
-      });
+      const sorted = [...(tiers as PackTier[])].sort((a, b) => a.price - b.price);
+      if (sameLadder(sorted, s.ladder) === false) body.ladder = sorted;
+      if (Object.keys(body).length === 0) return false;
+      await api("/admin/settings/drops", { method: "PATCH", body });
+      return true;
     },
-    onSuccess: () => {
-      toast({ tone: "ok", title: "Settings saved", detail: "Applies from the next drop" });
-      void client.invalidateQueries({ queryKey: ["admin"] });
+    onSuccess: async (changed) => {
+      // Reload first, then let the form follow the server again, so it never flashes the old values.
+      await client.invalidateQueries({ queryKey: ["admin"] });
+      setDirty(false);
+      toast(changed ? { tone: "ok", title: "Settings saved", detail: "Applies from the next drop" } : { tone: "info", title: "Nothing changed" });
     },
     onError: (error) => toast({ tone: "bad", title: (error as Error).message }),
   });
@@ -230,7 +278,15 @@ export default function AdminPage() {
   const next = status?.nextDropAt ? (new Date(status.nextDropAt).getTime() - now) / 1000 : null;
   const input = (key: string, label: string, hint?: string) => (
     <Field label={label} hint={hint}>
-      <input className={inputClass} inputMode="decimal" value={form[key] ?? ""} onChange={(e) => setForm((f) => ({ ...f, [key]: e.target.value }))} />
+      <input
+        className={inputClass}
+        inputMode="decimal"
+        value={form[key] ?? ""}
+        onChange={(e) => {
+          setDirty(true);
+          setForm((f) => ({ ...f, [key]: e.target.value }));
+        }}
+      />
     </Field>
   );
 
@@ -249,8 +305,8 @@ export default function AdminPage() {
                   {armed ? <Button disabled={arm.isPending} onClick={() => arm.mutate("disarm")}>Disarm</Button> : null}
                 </>
               ) : null}
-              {data.ops.reconcileHold ? <Button tone="danger" onClick={() => ops.mutate({ reconcileHold: false })}>Clear reconcile hold</Button> : null}
-              <Button tone={data.ops.killSwitch ? "snipe" : "danger"} onClick={() => ops.mutate({ killSwitch: !data.ops.killSwitch })}>
+              {data.ops.reconcileHold ? <Button tone="danger" disabled={ops.isPending} onClick={() => ops.mutate({ reconcileHold: false })}>Clear reconcile hold</Button> : null}
+              <Button tone={data.ops.killSwitch ? "snipe" : "danger"} disabled={ops.isPending} onClick={() => ops.mutate({ killSwitch: !data.ops.killSwitch })}>
                 <Power size={15} aria-hidden="true" /> {data.ops.killSwitch ? "Resume everything" : "Kill switch"}
               </Button>
             </div>
@@ -279,7 +335,16 @@ export default function AdminPage() {
               save.mutate();
             }}
           >
-            <SectionTitle right={<Button type="submit" tone="primary" className="h-9" disabled={save.isPending}>Save</Button>}>Pulse settings</SectionTitle>
+            <SectionTitle
+              right={
+                <span className="flex items-center gap-2">
+                  {dirty && !save.isPending ? <button type="button" onClick={() => setDirty(false)} className="text-[12.5px] text-faint hover:text-bone">Discard changes</button> : null}
+                  <Button type="submit" tone="primary" className="h-9" disabled={save.isPending}>Save</Button>
+                </span>
+              }
+            >
+              Pulse settings
+            </SectionTitle>
             <div className="grid grid-cols-2 gap-2.5 px-4 pb-3 md:grid-cols-3">
               {input("minPrice", "Min price $")}
               {input("maxPrice", "Sealed pack max $")}
@@ -293,7 +358,14 @@ export default function AdminPage() {
               {input("walletFloor", "Wallet floor $", "Kept back, never spent")}
               {input("budgetPerDayFallback", "Fallback budget $/day")}
             </div>
-            <PackLadder rows={ladder} setRows={setLadder} free={balance("drops") - usd(Number(form.walletFloor) || 0)} />
+            <PackLadder
+              rows={ladder}
+              setRows={(rows) => {
+                setDirty(true);
+                setLadder(rows);
+              }}
+              free={balance("drops") - (readField("walletFloor", form.walletFloor) ?? 0)}
+            />
           </form>
 
           <div className="flex min-w-0 flex-col gap-3">

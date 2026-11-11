@@ -44,7 +44,7 @@ Pulse sales (half of what winners pay) ──► buyback and burn of $TENR      
 - **Where it sits:** `revenue` is held in the Drops wallet, where winners' payments land. Reconciliation counts it there.
 - **Loop (`apps/worker/src/buyback.ts`, checked every minute, a run at most every 15 minutes):**
   1. If `revenue` holds at least $25 (`buybackMinUsd`) and there's a market, set it all aside (`revenue` → `buyback_inflight`).
-  2. Swap it to $TENR through Jupiter from the Drops wallet, with a fresh quote each attempt and `buybackMaxSlippageBps` (1.5%) as the limit.
+  2. Swap it to $TENR through Jupiter from the Drops wallet, with a fresh quote each attempt and `buybackMaxSlippageBps` (1.5%) as the limit. The limit is held against the least the order can pay out (Jupiter's own floor, `otherAmountThreshold`), not its quoted amount, so a swap Jupiter would let slip further than the limit is refused and tried again. If buybacks never go through, Jupiter's slippage for $TENR is wider than this setting: raise it in Admin. Fee swaps ($CARDS to USDC) follow the same rule with the fee setting `maxSlippageBps`.
   3. Burn every $TENR the Drops wallet holds.
   4. Book the USDC as gone (`buyback_inflight` → `world`) and record the run: USDC in, $TENR bought, swap and burn signatures.
 - **Each step resumes:** stages are PENDING → SWAPPED → DONE, every transaction goes through `sendOnce`. A swap that can't go through in 6 hours returns its money to `revenue` (SKIPPED).

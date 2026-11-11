@@ -33,7 +33,8 @@ export function GiftBanner() {
     onError: (error) => toast({ tone: "bad", title: "Couldn't claim", detail: (error as Error).message }),
   });
   const gift = gifts.data?.gifts.find((g) => g.claimable);
-  if (!gift) return null;
+  // Signed out, a gift left in the cache belongs to whoever was here before.
+  if (!me || !gift) return null;
   const left = gift.expiresAt ? Math.max(0, new Date(gift.expiresAt).getTime() - now) : 0;
   const hours = Math.floor(left / 3_600_000);
   const minutes = Math.floor((left % 3_600_000) / 60_000);

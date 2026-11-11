@@ -67,12 +67,15 @@ export interface PauseInput {
   dropsBalance: Micros;
   spent24h: Micros;
   settings: Pick<DropSettings, "walletFloor" | "dailySpendCap">;
+  /** Mainnet outside an armed window: nothing can be signed, so no card could be bought or paid for. */
+  notArmed?: boolean;
 }
 
-export type PauseReason = "disabled" | "kill_switch" | "reconcile_mismatch" | "wallet_floor" | "daily_cap";
+export type PauseReason = "disabled" | "kill_switch" | "not_armed" | "reconcile_mismatch" | "wallet_floor" | "daily_cap";
 
 export function pauseReason(input: PauseInput): PauseReason | null {
   if (input.killSwitch) return "kill_switch";
+  if (input.notArmed) return "not_armed";
   if (input.reconcileHold) return "reconcile_mismatch";
   if (!input.enabled) return "disabled";
   if (input.dropsBalance < input.settings.walletFloor) return "wallet_floor";
@@ -89,10 +92,12 @@ const canSell = (machine: MachineEcon | undefined): machine is MachineEcon => !!
  * The machines Pulse may open now, weighted for pickMachine. A size counts when it is on, the free money has
  * reached its unlock point and covers its price, and one of its machines at that price can sell. Its weight is
  * shared among those machines. A big size that just dropped sits out one turn, unless nothing else is open.
+ * `room` is what is left of the daily spend cap: a size that costs more than that waits, so one big pack can't
+ * carry the day far past the cap.
  */
-export function ladderMix(ladder: PackTier[], machines: MachineEcon[], free: Micros, lastPrice: Micros | null): MachineWeight[] {
+export function ladderMix(ladder: PackTier[], machines: MachineEcon[], free: Micros, lastPrice: Micros | null, room: Micros = Number.MAX_SAFE_INTEGER): MachineWeight[] {
   const open = ladder
-    .filter((tier) => tier.enabled && tier.weight > 0 && free >= tier.unlockAt && free >= tier.price)
+    .filter((tier) => tier.enabled && tier.weight > 0 && free >= tier.unlockAt && free >= tier.price && tier.price <= room)
     .map((tier) => ({ tier, usable: tier.machines.map((code) => machines.find((m) => m.code === code)).filter(canSell).filter((m) => m.price === tier.price) }))
     .filter((x) => x.usable.length > 0);
   const others = open.filter((x) => !(lastPrice !== null && lastPrice > BIG_PACK && x.tier.price === lastPrice));

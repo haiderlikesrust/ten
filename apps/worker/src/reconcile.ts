@@ -1,4 +1,4 @@
-import { balances, chainTx, eq, feeRuns, getSetting, inArray, loadJson, reconcileRuns, saveJson, setSetting, sql, treasuryMoves, users } from "@gemdex/db";
+import { and, balances, chainTx, eq, getSetting, gt, inArray, loadJson, reconcileRuns, saveJson, setSetting, sql, treasuryMoves, users } from "@gemdex/db";
 import { role, trader, type Party } from "@gemdex/venues";
 import type { Ctx } from "./ctx";
 
@@ -14,6 +14,12 @@ export const DROPS_WALLET_ACCOUNTS = ["gifts", "gift_reserved", "revenue", "buyb
 
 /** Long enough for a transfer that just landed to reach the book. */
 const SETTLE_MS = 3_000;
+/**
+ * How long a transaction can explain a difference. One still signed or sent is settled within a couple of minutes,
+ * and a confirmed one is booked on the next tick. Anything older was left behind, and must not keep the check
+ * switched off for good.
+ */
+const IN_FLIGHT_MS = 15 * 60_000;
 
 async function compareBooks(ctx: Ctx): Promise<Mismatch[]> {
   const rows = await ctx.db.select().from(balances).where(sql`${balances.account} like 'user:%' or ${balances.account} in ('drops', 'cashback', 'fee')`);
@@ -59,16 +65,25 @@ export async function reconcile(ctx: Ctx, settleMs = SETTLE_MS): Promise<{ ok: b
     mismatches = (await compareBooks(ctx)).filter((m) => first.some((p) => p.account === m.account && p.chain - p.book === m.chain - m.book));
   }
 
+  const recently = new Date(Date.now() - IN_FLIGHT_MS);
   const [openTx, openFees, openMoves] = await Promise.all([
-    ctx.db.select({ id: chainTx.id }).from(chainTx).where(inArray(chainTx.status, ["signed", "sent"])).limit(1),
-    ctx.db.select({ id: feeRuns.id }).from(feeRuns).where(inArray(feeRuns.stage, ["PENDING", "COLLECTED", "SWAPPED"])).limit(1),
+    ctx.db.select({ id: chainTx.id }).from(chainTx).where(and(inArray(chainTx.status, ["signed", "sent"]), gt(chainTx.updatedAt, recently))).limit(1),
+    // A fee run moves money in steps, and each step reaches the book a moment after its transaction lands. A run
+    // that is only stuck (no SOL to swap with, say) moves nothing, and used to count as in flight for as long as it lasted.
+    ctx.sql<{ id: string }[]>`
+      select r.id from fee_runs r join chain_tx c on c.ref = r.id::text and c.purpose in ('fee_collect', 'fee_swap', 'fee_split')
+      where r.stage in ('PENDING', 'COLLECTED', 'SWAPPED') and c.status = 'confirmed' and c.updated_at > now() - interval '15 minutes'
+      limit 1`,
     // A treasury transfer an admin recorded but the worker has not booked yet is money on its way into the books.
     ctx.db.select({ id: treasuryMoves.id }).from(treasuryMoves).where(eq(treasuryMoves.state, "PENDING")).limit(1),
   ]);
   const inFlight = openTx.length > 0 || openFees.length > 0 || openMoves.length > 0;
 
   const previous = (await loadJson<Mismatch[]>(ctx.db, "reconcileLast")) ?? [];
-  const repeated = mismatches.filter((m) => previous.some((p) => p.account === m.account && p.book === m.book && p.chain === m.chain));
+  // Only a wallet holding LESS than its book pauses Pulse: that is money gone missing. A wallet holding more is
+  // safe to carry on with, and is still listed for an admin to look at. Treasury addresses are public, so if a
+  // surplus paused Pulse, anyone could stop it for good by sending a wallet a fraction of a cent.
+  const repeated = mismatches.filter((m) => m.chain < m.book && previous.some((p) => p.account === m.account && p.book === m.book && p.chain === m.chain));
   await saveJson(ctx.db, "reconcileLast", mismatches);
   await ctx.db.insert(reconcileRuns).values({ ok: mismatches.length === 0, mismatches });
 

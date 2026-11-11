@@ -110,9 +110,11 @@ export default function ScannerPage() {
   const fresh = useLive((s) => s.fresh);
   const below = useLive((s) => s.below);
   const pulls = useLive((s) => s.pulls);
+  const loaded = useLive((s) => s.loaded);
   const [view, setView] = useState<"new" | "below">("new");
   const [search, setSearch] = useState("");
-  const loading = fresh.length === 0;
+  // Loading only until the first load lands. After that an empty feed is a quiet market, not a wait.
+  const loading = !loaded && fresh.length === 0;
 
   const tape = useMemo(() => {
     const q = search.trim().toLowerCase();
@@ -161,14 +163,14 @@ export default function ScannerPage() {
               <span>Age</span><span>Card</span><span>Grade</span><span className="text-right">Price</span><span className="text-right">Insured</span><span className="text-right">vs insured</span><span className="min-w-[76px]" />
             </div>
             <div className="min-h-0 flex-1 overflow-y-auto">
-              {loading ? <Skeleton /> : tape.length === 0 ? <Empty title="No listings match" /> : <ul>{tape.map((listing) => <TapeRow key={listing.nft} listing={listing} />)}</ul>}
+              {loading ? <Skeleton /> : tape.length === 0 ? <Empty title={search.trim() ? "No listings match" : view === "below" ? "Nothing below insured value right now" : "No new listings right now"} /> : <ul>{tape.map((listing) => <TapeRow key={listing.nft} listing={listing} />)}</ul>}
             </div>
           </section>
 
           <section aria-label="Fresh pulls" className="slab flex max-h-[520px] min-h-0 min-w-0 flex-col xl:max-h-none">
             <SectionTitle right={<span className="num text-[12.5px] text-faint">{pulls.length}</span>}>Fresh pulls</SectionTitle>
             <div className="min-h-0 flex-1 overflow-y-auto pb-1">
-              {pulls.length === 0 ? <Skeleton rows={4} /> : <ul>{pulls.map((pull) => <PullLine key={pull.id} pull={pull} />)}</ul>}
+              {pulls.length > 0 ? <ul>{pulls.map((pull) => <PullLine key={pull.id} pull={pull} />)}</ul> : loaded ? <p className="px-3.5 pb-3 text-[13.5px] text-faint">No pulls yet.</p> : <Skeleton rows={4} />}
             </div>
           </section>
         </div>

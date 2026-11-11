@@ -1,16 +1,23 @@
 import { and, eq, sql } from "drizzle-orm";
 import type { DbOrTx, Tx } from "./client";
 import { balanceOf, emit, userAccount } from "./ledger";
-import { holds, orders, users } from "./schema";
+import { balances, holds, orders, users } from "./schema";
 
-/** Spendable balance: what the book says, minus money already reserved. */
+/**
+ * Spendable balance: what the book says, minus money already reserved. Both are read in one statement, so they
+ * come from the same moment. Read apart, a payment that landed in between (balance down, its hold closed) showed
+ * up in only one of them, and for that instant the user looked richer than they were.
+ */
 export async function availableBalance(db: DbOrTx, userId: string): Promise<number> {
-  const balance = await balanceOf(db, userAccount(userId));
   const rows = await db
-    .select({ held: sql<string>`coalesce(sum(${holds.amount}), 0)` })
-    .from(holds)
-    .where(and(eq(holds.userId, userId), eq(holds.status, "active")));
-  return balance - Number(rows[0]?.held ?? 0);
+    .select({
+      balance: balances.micros,
+      held: sql<string>`(select coalesce(sum(${holds.amount}), 0) from ${holds} where ${holds.userId} = ${userId} and ${holds.status} = 'active')`,
+    })
+    .from(users)
+    .leftJoin(balances, eq(balances.account, userAccount(userId)))
+    .where(eq(users.id, userId));
+  return Number(rows[0]?.balance ?? 0) - Number(rows[0]?.held ?? 0);
 }
 
 export async function closeHold(tx: DbOrTx, holdId: string, status: "captured" | "released"): Promise<void> {

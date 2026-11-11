@@ -4,7 +4,7 @@ import { BRAND } from "@gemdex/core";
 import { useQuery } from "@tanstack/react-query";
 import { Briefcase, Clock3, Copy, Download, LayoutGrid, List, Search, Share2, Truck, X } from "lucide-react";
 import Link from "next/link";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { Button, CardThumb, Empty, Grade, Pill, Rarity, SectionTitle, Segmented, Sheet, inputClass, rarityWash } from "@/components/bits";
 import { PortfolioChart } from "@/components/PortfolioChart";
 import { api } from "@/lib/api";
@@ -60,17 +60,19 @@ function ListSheet({ holding, onClose }: { holding: Holding; onClose: () => void
 function HoldingActions({ holding, onList }: { holding: Holding; onList: () => void }) {
   const { holding: act } = useTrade();
   const now = useNow();
+  // Being sold, listed or sent right now, alone or as part of a bulk sale, so a second press would only repeat it.
+  const busy = useUi((s) => s.busy.has(holding.id));
   const sellable = isSellable(holding, now);
   return (
     <div className="flex items-center gap-1">
       {sellable ? (
-        <Button className="h-8 min-w-0 flex-1 px-2 text-[12.5px]" onClick={() => void act("buyback", holding.id, { inMainWallet: holding.wallet === "connected" })}>
+        <Button className="h-8 min-w-0 flex-1 px-2 text-[12.5px]" disabled={busy} onClick={() => void act("buyback", holding.id, { inMainWallet: holding.wallet === "connected" })}>
           Sell {money(holding.buybackAmount)}
         </Button>
       ) : null}
       {/* Listing is signed by the trading wallet, so a card in the user's own wallet can't be listed from here. */}
-      {holding.status === "held" && holding.wallet === "trading" ? <Button tone="ghost" className="h-8 px-2 text-[12.5px]" onClick={onList}>List</Button> : null}
-      {holding.wallet === "trading" ? <Button tone="ghost" className="h-8 px-2 text-[12.5px]" onClick={() => void act("send", holding.id, { nft: holding.nft })}>Send</Button> : null}
+      {holding.status === "held" && holding.wallet === "trading" ? <Button tone="ghost" className="h-8 px-2 text-[12.5px]" disabled={busy} onClick={onList}>List</Button> : null}
+      {holding.wallet === "trading" ? <Button tone="ghost" className="h-8 px-2 text-[12.5px]" disabled={busy} onClick={() => void act("send", holding.id, { nft: holding.nft })}>Send</Button> : null}
       <a title="Ship to your door" aria-label="Ship to your door" className="ml-auto flex h-8 w-8 shrink-0 items-center justify-center px-cut text-faint hover:bg-bone/[0.07] hover:text-bone" href={`https://collectorcrypt.com/assets/solana/${holding.nft}`} target="_blank" rel="noreferrer noopener">
         <Truck size={15} aria-hidden="true" />
       </a>
@@ -198,6 +200,7 @@ function Allocation({ held }: { held: Holding[] }) {
 function BuybackPanel({ held }: { held: Holding[] }) {
   const { holding: act } = useTrade();
   const now = useNow();
+  const busy = useUi((s) => s.busy);
   const open = held.filter((holding) => isSellable(holding, now)).sort((a, b) => new Date(a.buybackUntil!).getTime() - new Date(b.buybackUntil!).getTime());
   return (
     <section className="slab min-w-0">
@@ -213,7 +216,7 @@ function BuybackPanel({ held }: { held: Holding[] }) {
                 <div className="truncate text-[13px] font-medium">{holdingName(holding)}</div>
                 <BuybackTimer holding={holding} />
               </div>
-              <Button className="h-8 px-2.5 text-[12.5px]" onClick={() => void act("buyback", holding.id, { inMainWallet: holding.wallet === "connected" })}>Sell {money(holding.buybackAmount, true)}</Button>
+              <Button className="h-8 px-2.5 text-[12.5px]" disabled={busy.has(holding.id)} onClick={() => void act("buyback", holding.id, { inMainWallet: holding.wallet === "connected" })}>Sell {money(holding.buybackAmount, true)}</Button>
             </li>
           ))}
         </ul>
@@ -254,11 +257,17 @@ function Calendar({ days }: { days: Portfolio["days"] }) {
 function PnlSheet({ data, onClose }: { data: PnlCardData; onClose: () => void }) {
   const toast = useUi((s) => s.toast);
   const [canvas, setCanvas] = useState<HTMLCanvasElement | null>(null);
+  // The picture is a megapixel PNG, so it is encoded once per drawing and kept, not made again on every render.
+  const [image, setImage] = useState<string | null>(null);
   const [failed, setFailed] = useState(false);
   useEffect(() => {
     let current = true;
     drawPnlCard(data)
-      .then((drawn) => current && setCanvas(drawn))
+      .then((drawn) => {
+        if (!current) return;
+        setCanvas(drawn);
+        setImage(drawn.toDataURL("image/png"));
+      })
       .catch(() => current && setFailed(true));
     return () => {
       current = false;
@@ -266,9 +275,9 @@ function PnlSheet({ data, onClose }: { data: PnlCardData; onClose: () => void })
   }, [data]);
 
   const download = () => {
-    if (!canvas) return;
+    if (!image) return;
     const link = document.createElement("a");
-    link.href = canvas.toDataURL("image/png");
+    link.href = image;
     link.download = `${BRAND.name.toLowerCase()}-pnl.png`;
     link.click();
   };
@@ -287,15 +296,15 @@ function PnlSheet({ data, onClose }: { data: PnlCardData; onClose: () => void })
       <div className="flex flex-col gap-3 p-4 pt-0">
         {/* Near-square, like the art, and capped in height so the whole card fits on screen. */}
         <div className="mx-auto w-full overflow-hidden px-cut bg-raised" style={{ aspectRatio: `${PNL_WIDTH} / ${PNL_HEIGHT}`, maxWidth: `calc(64dvh * ${PNL_WIDTH} / ${PNL_HEIGHT})` }}>
-          {canvas ? (
-            <img src={canvas.toDataURL("image/png")} alt="Your profit and loss card" className="h-full w-full" />
+          {image ? (
+            <img src={image} alt="Your profit and loss card" className="h-full w-full" />
           ) : (
             <div className="flex h-full items-center justify-center text-[13.5px] text-faint">{failed ? "Could not draw your card. Close this and try again." : "Drawing your card"}</div>
           )}
         </div>
         <div className="flex items-center justify-end gap-1.5">
           <Button tone="ghost" onClick={copy} disabled={!canvas}><Copy size={15} aria-hidden="true" /> Copy</Button>
-          <Button tone="snipe" onClick={download} disabled={!canvas}><Download size={15} aria-hidden="true" /> Download</Button>
+          <Button tone="snipe" onClick={download} disabled={!image}><Download size={15} aria-hidden="true" /> Download</Button>
         </div>
       </div>
     </Sheet>
@@ -327,6 +336,12 @@ function Overview({ data, held, exited, balance, handle }: { data: Portfolio | u
   const history = useMemo(() => buildHistory(held, exited, wallet), [held, exited, wallet]);
   const hours = RANGES.find((item) => item.value === range)?.hours ?? null;
   const points = useMemo(() => inRange(history, hours), [history, hours]);
+  // This panel redraws every second for its timers. The card's data stays the same object until a number really
+  // changes, so the share sheet draws its picture once and not once a second.
+  const pnlCard = useMemo<PnlCardData>(
+    () => ({ handle, value: summary.value, unrealized: summary.unrealized, realized: summary.realized, invested, cards: held.length, history }),
+    [handle, summary.value, summary.unrealized, summary.realized, invested, held.length, history],
+  );
 
   return (
     <section className="slab min-w-0 overflow-hidden">
@@ -366,7 +381,7 @@ function Overview({ data, held, exited, balance, handle }: { data: Portfolio | u
         <Figure label={exited.length ? `Realized · ${Math.round((wins / exited.length) * 100)}% won` : "Realized"} value={signed(summary.realized)} tone={toneOf(summary.realized)} />
         <Figure label="Sell back now" value={money(instant)} />
       </div>
-      {sharing ? <PnlSheet data={{ handle, value: summary.value, unrealized: summary.unrealized, realized: summary.realized, invested, cards: held.length, history }} onClose={() => setSharing(false)} /> : null}
+      {sharing ? <PnlSheet data={pnlCard} onClose={() => setSharing(false)} /> : null}
     </section>
   );
 }
@@ -381,8 +396,17 @@ export default function PortfolioPage() {
   const [wallet, setWallet] = useState<"all" | "connected" | "trading">("all");
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [listing, setListing] = useState<Holding | null>(null);
+  // A bulk sale in progress: which card it is on, out of how many.
+  const [bulk, setBulk] = useState<{ at: number; total: number; stopping: boolean } | null>(null);
+  const stopBulk = useRef(false);
+  const toast = useUi((s) => s.toast);
+  const setBusy = useUi((s) => s.setBusy);
   const { holding: act } = useTrade();
   const now = useNow();
+  // Leaving the page ends a bulk sale after the card it is on, so no wallet prompt opens over another page.
+  useEffect(() => () => {
+    stopBulk.current = true;
+  }, []);
   const query = useQuery({ queryKey: ["portfolio"], enabled: !!me, queryFn: () => api<Portfolio>("/portfolio"), refetchInterval: 20_000 });
   const activity = useQuery({ queryKey: ["activity"], enabled: !!me && tab === "activity", queryFn: () => api<ActivityRow[]>("/activity") });
 
@@ -413,6 +437,30 @@ export default function PortfolioPage() {
       else next.add(id);
       return next;
     });
+  const sellPicked = async () => {
+    // One at a time: cards in the user's own wallet each open a wallet prompt, and they can't all be open at once.
+    const batch = [...picked];
+    const ids = batch.map((h) => h.id);
+    setSelected(new Set());
+    stopBulk.current = false;
+    // Every card in the run is marked now, so the ones still waiting can't also be sold from their own buttons.
+    setBusy(ids, true);
+    let sold = 0;
+    for (const h of batch) {
+      setBulk({ at: sold + 1, total: batch.length, stopping: false });
+      // A failed sale or a refused wallet prompt ends the run. Carrying on would open a prompt for every card left.
+      if (!(await act("buyback", h.id, { inMainWallet: h.wallet === "connected" }))) break;
+      sold += 1;
+      if (stopBulk.current) break;
+    }
+    setBusy(ids, false);
+    setBulk(null);
+    if (sold < batch.length) {
+      // The cards that were not sold are picked again, so the run can carry on with one press.
+      setSelected(new Set(ids.slice(sold)));
+      if (sold > 0) toast({ tone: "info", title: `Stopped after ${sold} of ${batch.length}`, detail: "The rest are still selected" });
+    }
+  };
 
   return (
     <div className="h-full overflow-y-auto">
@@ -461,7 +509,23 @@ export default function PortfolioPage() {
             ) : null}
           </div>
 
-          {tab === "holdings" && picked.length > 0 ? (
+          {tab === "holdings" && bulk ? (
+            <div className="mx-2 mb-2 flex items-center gap-2 px-cut bg-volt/12 px-3 py-1.5" role="status">
+              <span className="text-[13.5px] font-medium">Selling <span className="num">{bulk.at}</span> of <span className="num">{bulk.total}</span></span>
+              <div className="ml-auto">
+                <Button
+                  className="h-8 text-[13px]"
+                  disabled={bulk.stopping}
+                  onClick={() => {
+                    stopBulk.current = true;
+                    setBulk((current) => current && { ...current, stopping: true });
+                  }}
+                >
+                  {bulk.stopping ? "Stopping after this card" : "Stop"}
+                </Button>
+              </div>
+            </div>
+          ) : tab === "holdings" && picked.length > 0 ? (
             <div className="mx-2 mb-2 flex items-center gap-2 px-cut bg-volt/12 px-3 py-1.5">
               <span className="text-[13.5px] font-medium">{picked.length} selected</span>
               <button type="button" className="text-[13px] text-mute underline-offset-2 hover:underline" onClick={() => setSelected(new Set(sellable.map((h) => h.id)))}>Select all {sellable.length}</button>
@@ -469,14 +533,7 @@ export default function PortfolioPage() {
                 <Button
                   tone="snipe"
                   className="h-8 text-[13px]"
-                  onClick={() => {
-                    // One at a time: cards in the user's own wallet each open a wallet prompt, and they can't all be open at once.
-                    const batch = [...picked];
-                    setSelected(new Set());
-                    void (async () => {
-                      for (const h of batch) await act("buyback", h.id, { inMainWallet: h.wallet === "connected" });
-                    })();
-                  }}
+                  onClick={() => void sellPicked()}
                 >
                   Sell back <span className="num text-[14px] font-bold">{money(pickedTotal)}</span>
                 </Button>

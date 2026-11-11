@@ -1,5 +1,5 @@
 import { splitFees, type FeeStage, BRAND } from "@gemdex/core";
-import { emit, eq, feeRuns, getSetting, inArray, post } from "@gemdex/db";
+import { and, chainTx, emit, eq, feeRuns, getSetting, inArray, post } from "@gemdex/db";
 import { sendOnce } from "./chain-tx";
 import type { Ctx } from "./ctx";
 
@@ -39,10 +39,16 @@ export async function tickFees(ctx: Ctx): Promise<void> {
 
   if (run.stage === "COLLECTED") {
     const cardsIn = run.cardsIn ?? 0;
-    const quoted = await ctx.venue.fees.cardsValue(cardsIn);
-    if (quoted < settings.minSwapUsd) return advance(ctx, run, "SKIPPED");
-    const minOut = Math.floor((quoted * (10_000 - settings.maxSlippageBps)) / 10_000);
-    const result = await sendOnce(ctx, "fee_swap", run.id, async () => ({ type: "swap", cardsIn, minOut }), { retryFailed: true });
+    // Whether the fees are worth swapping is only asked before a swap exists. This stage runs again every minute,
+    // and a run starts with its value right at the threshold: asked again after the swap had landed, a price a
+    // few cents lower marked the run skipped, and the USDC it had just bought was never booked or shared out.
+    const swapping = await ctx.db.select({ id: chainTx.id }).from(chainTx).where(and(eq(chainTx.purpose, "fee_swap"), eq(chainTx.ref, run.id))).limit(1);
+    if (!swapping[0] && (await ctx.venue.fees.cardsValue(cardsIn)) < settings.minSwapUsd) return advance(ctx, run, "SKIPPED");
+    const result = await sendOnce(ctx, "fee_swap", run.id, async () => {
+      // A fresh quote for each attempt, so the floor follows the market rather than an old price.
+      const quoted = await ctx.venue.fees.cardsValue(cardsIn);
+      return { type: "swap", cardsIn, minOut: Math.floor((quoted * (10_000 - settings.maxSlippageBps)) / 10_000) };
+    }, { retryFailed: true });
     if (result.status === "failed") return advance(ctx, run, "COLLECTED", { error: "swap failed, will retry next run" });
     if (result.status !== "confirmed") return;
     const usdcOut = await ctx.venue.fees.usdcReceived(result.signature!);

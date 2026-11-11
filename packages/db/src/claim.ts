@@ -3,13 +3,13 @@ import { and, eq, sql } from "drizzle-orm";
 import type { Db } from "./client";
 import { emit } from "./ledger";
 import { availableBalance } from "./orders";
-import { claims, drops, holds, users } from "./schema";
-import { getSetting } from "./settings";
+import { claims, dropLimits, drops, holds, users } from "./schema";
+import { getSetting, pausedBy } from "./settings";
 
 export type ClaimResult =
   | { status: "won"; claimId: string; price: number; repeat: boolean }
   | { status: "lost"; reason: "taken" | "closed" }
-  | { status: "rejected"; reason: "insufficient_funds" | "minimum_balance" | "cooldown" | "active_claim" | "not_found" | "drops_paused" | "price_moved"; retryInSec?: number; available?: number; price?: number };
+  | { status: "rejected"; reason: "insufficient_funds" | "minimum_balance" | "cooldown" | "active_claim" | "not_found" | "drops_paused" | "price_moved" | "cancelled"; retryInSec?: number; available?: number; price?: number };
 
 export interface ClaimInput {
   userId: string;
@@ -17,6 +17,10 @@ export interface ClaimInput {
   idempotencyKey: string;
   /** The most the buyer agreed to pay. The price moves every second, so it can change mid-click. */
   maxPrice?: number;
+  /** paper, devnet or mainnet. On mainnet nothing is claimed outside an armed window, because nothing could settle it. */
+  mode?: string;
+  /** The limit order this claim fills. It must still be open when the claim is decided. */
+  limitId?: string;
 }
 
 /**
@@ -28,7 +32,9 @@ export interface ClaimInput {
  */
 export async function claimDrop(db: Db, input: ClaimInput): Promise<ClaimResult> {
   const [settings, ops] = await Promise.all([getSetting(db, "drops"), getSetting(db, "ops")]);
-  if (ops.killSwitch) return { status: "rejected", reason: "drops_paused" };
+  // A claim takes the buyer's money on hold at once. With the kill switch on, or mainnet unarmed, no transaction
+  // could settle it, so the hold would sit there until an admin came back. Limit orders reach this without the gateway.
+  if (pausedBy(ops, input.mode ?? "paper")) return { status: "rejected", reason: "drops_paused" };
 
   return db.transaction(async (tx): Promise<ClaimResult> => {
     // Locks this user only, so one person cannot race themselves across their own balance.
@@ -38,6 +44,13 @@ export async function claimDrop(db: Db, input: ClaimInput): Promise<ClaimResult>
 
     const prior = await tx.select().from(claims).where(and(eq(claims.userId, input.userId), eq(claims.idempotencyKey, input.idempotencyKey)));
     if (prior[0]) return { status: "won", claimId: prior[0].id, price: prior[0].price, repeat: true };
+
+    if (input.limitId) {
+      // The worker read this order a moment ago, and the user may have cancelled or replaced it since. Locking its
+      // row makes this claim and a cancel take turns: whichever comes second sees what the first one did.
+      const open = await tx.select({ id: dropLimits.id }).from(dropLimits).where(and(eq(dropLimits.id, input.limitId), eq(dropLimits.state, "open"))).for("update");
+      if (!open[0]) return { status: "rejected", reason: "cancelled" };
+    }
 
     const dropRows = await tx.select({ price: drops.price, state: drops.state, path: drops.path, opensAt: drops.opensAt }).from(drops).where(eq(drops.id, input.dropId));
     const drop = dropRows[0];
@@ -76,6 +89,7 @@ export async function claimDrop(db: Db, input: ClaimInput): Promise<ClaimResult>
       id: claimId, dropId: input.dropId, userId: input.userId, idempotencyKey: input.idempotencyKey, deliverTo: user.connectedWallet, price, holdId: hold[0]!.id,
       settleBy: new Date(now + 60_000),
     });
+    if (input.limitId) await tx.update(dropLimits).set({ state: "filled" }).where(eq(dropLimits.id, input.limitId));
     await emit(tx, "drops", { type: "claimed", dropId: input.dropId, number: taken[0]!.number, by: user.connectedWallet, price, stoppedAt });
     await emit(tx, `user:${input.userId}`, { type: "claim", id: claimId, dropId: input.dropId, state: "won" });
     return { status: "won", claimId, price, repeat: false };

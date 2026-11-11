@@ -4,6 +4,7 @@ import { usd } from "@gemdex/core";
 import { balanceOf, chainTx, eq, getSetting, post, setSetting, treasuryMoves } from "@gemdex/db";
 import { CcRead, createPaperVenue, type Party, type UsdcMoved } from "@gemdex/venues";
 import { tickTreasuryMoves } from "../src/treasury";
+import { tickScheduler } from "../src/drops";
 import { reconcile } from "../src/reconcile";
 import type { Ctx } from "../src/ctx";
 import { createTestDb, type TestDb } from "../../../tools/testdb";
@@ -13,7 +14,8 @@ let ctx: Ctx;
 /** What the fake chain reports for each signature, per wallet. */
 const onChain = new Map<string, UsdcMoved | ((party: Party) => UsdcMoved)>();
 let n = 0;
-const sig = () => `${"5".repeat(60)}${String(++n).padStart(8, "1").replace(/0/g, "z")}`;
+// Padded with a letter: padded with "1", the 3rd and the 13th signature came out the same.
+const sig = () => `${"5".repeat(60)}${String(++n).padStart(8, "A").replace(/0/g, "z")}`;
 
 beforeAll(async () => {
   t = await createTestDb(4);
@@ -125,6 +127,42 @@ describe("treasury transfers", () => {
     await tickTreasuryMoves(ctx);
     expect((await moveOf(broken)).state).toBe("PENDING");
     expect((await moveOf(good)).state).toBe("BOOKED");
+  });
+
+  it("books one transfer between the two wallets on both sides", async () => {
+    const drops = await balanceOf(t.db, "drops");
+    const cashback = await balanceOf(t.db, "cashback");
+    const signature = sig();
+    // One transaction: $30 out of Drops, into Cashback. It is recorded once for each wallet.
+    onChain.set(signature, (party) => ({ status: "ok", amount: (party as { role?: string }).role === "drops" ? -usd(30) : usd(30) }));
+    await record("drops", signature);
+    await record("cashback", signature);
+    await tickTreasuryMoves(ctx);
+    await tickTreasuryMoves(ctx);
+    expect(await balanceOf(t.db, "drops")).toBe(drops - usd(30));
+    expect(await balanceOf(t.db, "cashback")).toBe(cashback + usd(30));
+    expect((await t.db.select().from(treasuryMoves).where(eq(treasuryMoves.signature, signature))).map((move) => move.state)).toEqual(["BOOKED", "BOOKED"]);
+  });
+
+  it("never counts a hand-made transfer as Pulse spending", async () => {
+    // Pool money that came from fees, not a transfer, and one real pack bought with it.
+    await t.db.transaction((tx) => post(tx, `seed:test:${sig()}`, "seed", [{ account: "world", delta: -usd(1_000) }, { account: "drops", delta: usd(1_000) }]));
+    await t.db.transaction((tx) => post(tx, `pack:test:${sig()}`, "pack", [{ account: "drops", delta: -usd(50) }, { account: "cc", delta: usd(50) }]));
+    const spent = async () => (await tickScheduler(ctx)).spent24h;
+    // The deposits booked earlier in this file must not hide the pack.
+    const before = await spent();
+    expect(before).toBeGreaterThanOrEqual(usd(50));
+    // A sweep must not trip the daily cap.
+    const sweep = await record("drops");
+    onChain.set(sweep, { status: "ok", amount: -usd(900) });
+    await tickTreasuryMoves(ctx);
+    expect((await moveOf(sweep)).state).toBe("BOOKED");
+    expect(await spent()).toBe(before);
+    // A top-up must not hide what Pulse really spent.
+    const topUp = await record("drops");
+    onChain.set(topUp, { status: "ok", amount: usd(300) });
+    await tickTreasuryMoves(ctx);
+    expect(await spent()).toBe(before);
   });
 
   it("holds off Reconciliation while a recorded transfer waits to be booked", async () => {

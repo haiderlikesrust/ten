@@ -1,7 +1,7 @@
 // The only file allowed to put a transaction on a real chain. A test enforces that.
 import { createHash, createPublicKey, verify } from "node:crypto";
 import { rarityFromTier, usd, type Micros, type Rarity } from "@gemdex/core";
-import { getSetting, type Db } from "@gemdex/db";
+import { getSetting, pausedBy, type Db } from "@gemdex/db";
 import { transferV1 } from "@metaplex-foundation/mpl-core";
 import { createNoopSigner, publicKey as umiKey } from "@metaplex-foundation/umi";
 import { createUmi } from "@metaplex-foundation/umi-bundle-defaults";
@@ -17,7 +17,7 @@ import { CARDS_MINT as CARDS_ADDRESS } from "./tokens";
 import { CcRead, ccEndpointsFor, type CcEndpoints } from "./cc-read";
 import { createSigner, type AnyTx, type Signer } from "./signers";
 import {
-  AddressBlocked, AmbiguousSend, CardFrozen, MachineDown, TxRefused, role, type BuybackQuote, type ChainOp, type ChainVenue, type FeeVenue, type GachaVenue,
+  AddressBlocked, AmbiguousSend, CardFrozen, MachineDown, Paused, TxRefused, role, type BuybackQuote, type ChainOp, type ChainVenue, type FeeVenue, type GachaVenue,
   type GeneratedPack, type MarketVenue, type Mode, type OpenResult, type PaidPack, type Party, type PreparedTx, type Role, type TxStatus, type UsdcMoved, type Venue,
 } from "./types";
 
@@ -49,6 +49,15 @@ const MIN_BUYBACK = 10_000;
 const MAX_BUYBACK = 280_000_000_000;
 /** Most SOL a seller may spend on one sale: the network fee plus any rent CC asks for. */
 const MAX_SALE_LAMPORTS = 10_000_000n;
+/** How long to wait before asking again about a blockhash our node may simply not have seen yet. */
+const BLOCKHASH_GRACE_MS = 1_200;
+
+/**
+ * The least a Jupiter order can pay out. Jupiter picks its own slippage, and the signed swap enforces that floor
+ * (`otherAmountThreshold`), not the quoted amount. Our limit is held against the floor, so a swap can never fill
+ * worse than the limit allows. An order without one falls back to its quoted amount.
+ */
+const worstOut = (order: Record<string, unknown>): number => Number(order.otherAmountThreshold ?? order.outAmount ?? 0);
 /** CC refusing to sell from a machine right now. Nothing is charged. */
 const MACHINE_UNAVAILABLE = /machine is (low|off|empty)|off balance/i;
 
@@ -89,10 +98,8 @@ export async function assertCluster(connection: Connection, mode: Exclude<Mode, 
 /** Mainnet signing needs an admin to arm it, and the arm expires. */
 export async function assertArmed(db: Db, mode: Mode): Promise<void> {
   if (mode !== "mainnet") return;
-  const ops = await getSetting(db, "ops");
-  if (ops.killSwitch) throw new Error("kill switch is on");
-  const until = ops.armedUntil ? new Date(ops.armedUntil).getTime() : 0;
-  if (until <= Date.now() || ops.armedBy.length === 0) throw new Error("mainnet is not armed");
+  const why = pausedBy(await getSetting(db, "ops"), mode);
+  if (why) throw new Paused(why === "kill_switch" ? "kill switch is on" : "mainnet is not armed");
 }
 
 const toB64 = (bytes: Uint8Array) => Buffer.from(bytes).toString("base64");
@@ -310,7 +317,7 @@ class SolanaChain implements ChainVenue {
     if (unsigned.version !== 0 && unsigned.version !== "legacy") throw new TxRefused(`unsupported transaction version ${String(unsigned.version)}`);
     await policy.check?.(unsigned);
     const blockhash = unsigned.message.recentBlockhash;
-    if (!(await this.config.connection.isBlockhashValid(blockhash, { commitment: "confirmed" })).value) throw new TxRefused("the transaction expired before it was signed");
+    if (!(await this.blockhashAlive(blockhash))) throw new TxRefused("the transaction expired before it was signed");
 
     const wallet = await this.address(party);
     let signed: AnyTx;
@@ -326,6 +333,44 @@ class SolanaChain implements ChainVenue {
       if (simulation.value.err) throw new Error(`simulation failed: ${JSON.stringify(simulation.value.err)}`);
     }
     return this.envelope({ via, b64: toB64(serialized), signature: bs58.encode(tx.signatures[0]!), blockhash, wallet: wallet.toBase58() });
+  }
+
+  /**
+   * Whether a blockhash can still land. CC builds on its own node, which can be a slot ahead of ours, and to a
+   * node that has not seen a blockhash yet it looks the same as an expired one. Refusing on the first "no" would
+   * skip a drop or fail a pack that was fine, so it looks once more a moment later before calling it expired.
+   */
+  private async blockhashAlive(blockhash: string): Promise<boolean> {
+    const connection = this.config.connection;
+    if ((await connection.isBlockhashValid(blockhash, { commitment: "confirmed" })).value) return true;
+    await new Promise((resolve) => setTimeout(resolve, BLOCKHASH_GRACE_MS));
+    return (await connection.isBlockhashValid(blockhash, { commitment: "processed" })).value;
+  }
+
+  /**
+   * CC's marketplace builds buys and listings. This simulates one before it is signed: the wallet's USDC may fall
+   * by no more than the user agreed to (nothing at all, for a listing), and its SOL only by a network fee.
+   * Without it the wallet would sign whatever came back, and a listing repriced since the user looked could take
+   * more than the hold covers.
+   */
+  private async checkSpend(tx: VersionedTransaction, party: Party, maxUsdc: Micros, what: string) {
+    const wallet = await this.address(party);
+    const signers = tx.message.staticAccountKeys.slice(0, tx.message.header.numRequiredSignatures);
+    if (!signers.some((key) => key.equals(wallet))) throw new TxRefused(`the ${what} is not for this wallet to sign`);
+
+    const addresses = [wallet, getAssociatedTokenAddressSync(this.usdc, wallet, true)];
+    const connection = this.config.connection;
+    const before = await connection.getMultipleAccountsInfo(addresses, "confirmed");
+    const simulation = await connection.simulateTransaction(tx, {
+      sigVerify: false, replaceRecentBlockhash: true, commitment: "confirmed", accounts: { encoding: "base64", addresses: addresses.map((a) => a.toBase58()) },
+    });
+    if (simulation.value.err) throw new TxRefused(`the ${what} fails in simulation: ${JSON.stringify(simulation.value.err)}`);
+    const after = simulation.value.accounts;
+    if (!after || after.length !== addresses.length) throw new Error(`${what} simulation returned no accounts`);
+    const tokens = (data: Buffer | null | undefined) => (data && data.length >= 165 ? AccountLayout.decode(data).amount : 0n);
+    const afterUsdc = after[1]?.data?.[0] ? Buffer.from(after[1]!.data[0]!, "base64") : null;
+    if (BigInt(before[0]?.lamports ?? 0) - BigInt(after[0]?.lamports ?? 0) > MAX_SALE_LAMPORTS) throw new TxRefused(`the ${what} costs more SOL than a network fee`);
+    if (tokens(before[1]?.data) - tokens(afterUsdc) > BigInt(maxUsdc)) throw new TxRefused(`the ${what} would take more USDC than agreed`);
   }
 
   private async checkPack(tx: VersionedTransaction, op: Extract<ChainOp, { type: "ccPack" }>) {
@@ -407,9 +452,9 @@ class SolanaChain implements ChainVenue {
       case "ccBuyback":
         return this.ccBuilt(op.raw, op.owner, "gacha", { check: (tx) => this.checkSale(tx, op) });
       case "ccBuy":
-        return this.ccBuilt(op.raw, op.buyer, "market");
+        return this.ccBuilt(op.raw, op.buyer, "market", { check: (tx) => this.checkSpend(tx, op.buyer, op.amount, "purchase") });
       case "ccList":
-        return this.ccBuilt(op.raw, op.owner, "market");
+        return this.ccBuilt(op.raw, op.owner, "market", { check: (tx) => this.checkSpend(tx, op.owner, 0, "listing") });
       case "feeCollect":
         return this.own(await this.collectIx(), []);
       case "swap":
@@ -446,9 +491,10 @@ class SolanaChain implements ChainVenue {
   private async buyTenr(from: Party, usdcIn: Micros, minOut: number): Promise<PreparedTx> {
     const { decimals } = await this.tenrInfo();
     const order = await this.quoteTenr(usdcIn, (await this.address(from)).toBase58());
-    const out = Number(order.outAmount ?? 0) / 10 ** decimals;
     if (!order.transaction) throw new Error(`jupiter returned no transaction: ${String(order.errorMessage ?? "unknown")}`);
-    if (out < minOut) throw new Error(`buyback quote ${out} $TENR is below the minimum ${minOut}`);
+    const out = worstOut(order) / 10 ** decimals;
+    if (!(minOut > 0)) throw new Error("no minimum set for the buyback swap");
+    if (!(out >= minOut)) throw new Error(`the buyback could fill as low as ${out} $TENR, under the minimum ${minOut}`);
     const tx = await this.config.signer.sign(VersionedTransaction.deserialize(fromB64(String(order.transaction))), from);
     await this.assertPaysOwnFee(tx, from);
     return this.envelope({
@@ -515,10 +561,21 @@ class SolanaChain implements ChainVenue {
     if (!this.config.tokenMint) return 0;
     const { vaultAta, ammVaultAta } = await this.creatorVaults();
     // A vault only exists once fees have reached it.
-    const balance = (account: PublicKey) =>
-      this.config.connection.getTokenAccountBalance(account).then((b) => Number(b.value.uiAmount ?? 0), () => 0);
-    const [curve, pool] = await Promise.all([balance(vaultAta), balance(ammVaultAta)]);
+    const [curve, pool] = await Promise.all([this.tokensIn(vaultAta), this.tokensIn(ammVaultAta)]);
     return curve + pool;
+  }
+
+  /**
+   * A token account's balance in whole tokens. An account that does not exist yet holds nothing. Any other failed
+   * read is an error, never a zero: a timeout read as "empty" would record a fee run as worth nothing.
+   */
+  private async tokensIn(account: PublicKey): Promise<number> {
+    try {
+      return Number((await this.config.connection.getTokenAccountBalance(account)).value.uiAmount ?? 0);
+    } catch (error) {
+      if (/could not find account/i.test(error instanceof Error ? error.message : String(error))) return 0;
+      throw error;
+    }
   }
 
   /**
@@ -562,13 +619,14 @@ class SolanaChain implements ChainVenue {
       ],
     });
 
-    // Each program fails if its vault does not exist yet, and one failure would sink the whole
-    // transaction. A vault only appears once fees have accrued there, so skip the empty side.
-    const [curveVault, poolVault] = await this.config.connection.getMultipleAccountsInfo([vaultAta, ammVaultAta]);
+    // Each program fails if its vault does not exist yet, and one failure would sink the whole transaction. A vault
+    // that exists but is empty may fail the same way: after graduation the curve's vault stays behind with nothing
+    // in it. So a side is only claimed when it holds something.
+    const [curveHolds, poolHolds] = await Promise.all([this.tokensIn(vaultAta), this.tokensIn(ammVaultAta)]);
     return [
       createAssociatedTokenAccountIdempotentInstruction(payer, creatorAta, creator, CARDS_MINT, tokenProgram),
-      ...(curveVault ? [curve] : []),
-      ...(poolVault ? [amm] : []),
+      ...(curveHolds > 0 ? [curve] : []),
+      ...(poolHolds > 0 ? [amm] : []),
     ];
   }
 
@@ -576,6 +634,9 @@ class SolanaChain implements ChainVenue {
     const headers: Record<string, string> = { "Content-Type": "application/json" };
     if (this.config.jupiterKey) headers["x-api-key"] = this.config.jupiterKey;
     const res = await this.fetcher(`${JUPITER}${path}`, { ...init, headers });
+    // A rate limit or an outage answers with an error body that has no amounts. Read as a quote it would be zero:
+    // a fee run skipped as worthless, or a swap signed with no floor. So it is an error, and the caller tries again.
+    if (!res.ok) throw new Error(`jupiter ${res.status}: ${(await res.text().catch(() => "")).slice(0, 160)}`);
     return (await res.json()) as Record<string, unknown>;
   }
 
@@ -600,9 +661,10 @@ class SolanaChain implements ChainVenue {
   private async swap(cardsIn: number, minOut: Micros): Promise<PreparedTx> {
     const fee = role("fee");
     const order = await this.quoteCards(cardsIn, (await this.address(fee)).toBase58());
-    const out = Number(order.outAmount ?? 0);
     if (!order.transaction) throw new Error(`jupiter returned no transaction: ${String(order.errorMessage ?? "unknown")}`);
-    if (out < minOut) throw new Error(`swap quote ${out} is below the minimum ${minOut}`);
+    const out = worstOut(order);
+    if (!(minOut > 0)) throw new Error("no minimum set for the fee swap");
+    if (!(out >= minOut)) throw new Error(`the swap could fill as low as ${out}, under the minimum ${minOut}`);
     const tx = await this.config.signer.sign(VersionedTransaction.deserialize(fromB64(String(order.transaction))), fee);
     await this.assertPaysOwnFee(tx, fee);
     return this.envelope({
@@ -660,6 +722,8 @@ class SolanaChain implements ChainVenue {
   private async post(url: string, body: unknown, timeoutMs = CC_TIMEOUT_MS): Promise<Record<string, unknown>> {
     const headers: Record<string, string> = { "Content-Type": "application/json", "User-Agent": "tenner/0.1" };
     if (this.config.ccApiKey && url.startsWith(this.config.endpoints.gachaBase)) headers["x-api-key"] = this.config.ccApiKey;
+    // The marketplace takes the key as a bearer token, the same way its build calls send it.
+    if (this.config.ccApiKey && url.startsWith(this.config.endpoints.apiBase)) headers.Authorization = `Bearer ${this.config.ccApiKey}`;
     const res = await this.fetcher(url, { method: "POST", headers, body: JSON.stringify(body), signal: AbortSignal.timeout(timeoutMs) });
     if (!res.ok) throw new Error(`${res.status} ${(await res.text()).slice(0, 200)}`);
     return (await res.json().catch(() => ({}))) as Record<string, unknown>;
@@ -723,13 +787,7 @@ class SolanaChain implements ChainVenue {
   async cardsBalance(): Promise<number> {
     const fee = await this.address(role("fee"));
     const mintInfo = await this.config.connection.getAccountInfo(CARDS_MINT);
-    try {
-      const ata = getAssociatedTokenAddressSync(CARDS_MINT, fee, true, mintInfo?.owner ?? TOKEN_PROGRAM_ID);
-      const balance = await this.config.connection.getTokenAccountBalance(ata);
-      return Number(balance.value.uiAmount ?? 0);
-    } catch {
-      return 0;
-    }
+    return this.tokensIn(getAssociatedTokenAddressSync(CARDS_MINT, fee, true, mintInfo?.owner ?? TOKEN_PROGRAM_ID));
   }
 
   /** What actually arrived, read from the confirmed transaction rather than the quote. */

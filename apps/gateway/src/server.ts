@@ -1,11 +1,14 @@
 import cors from "@fastify/cors";
 import rateLimit from "@fastify/rate-limit";
 import websocket from "@fastify/websocket";
-import { BRAND, accessMessage, cashbackCapBps, discountPct, parseGradeNumber, pastPrices, publicDrop, pulseView, tierFor, holderBalance, usd, type Access } from "@gemdex/core";
+import {
+  BRAND, accessMessage, cashbackCapBps, discountPct, parseGradeNumber, pastPrices, publicDrop, pulseView, tierFor, holderBalance, usd,
+  type Access, type CashbackSettings, type DropSettings, type FeeSettings, type FlywheelSettings,
+} from "@gemdex/core";
 import {
   activity, and, asc, dropLimits, availableBalance, balanceOf, balances, ccPacks, claims, count, desc, drops, emit, eq, feeRuns, getSetting, gt, gte, holderSnapshots,
-  holdings, holds, ilike, inArray, listings, loadJson, lte, machines, orders, placeOrder, pricePoints, pulls, reconcileRuns, sales, saveJson, setSetting, sql, trackedWallets, treasuryMoves,
-  userAccount, users, watchlist, type Database,
+  holdings, holds, ilike, inArray, listings, loadJson, lte, machines, orders, pausedBy, placeOrder, pricePoints, pulls, reconcileRuns, sales, saveJson, setSetting, settingDefaults, sql,
+  trackedWallets, treasuryMoves, userAccount, users, watchlist, type Database,
 } from "@gemdex/db";
 import { CARDS_MINT, CcRead, createPaperVenue, fetchTokenMarket, type Mode, type PaperVenue, type TokenMarket } from "@gemdex/venues";
 import { checkAccess, tokenReaderFor, walletsOf } from "@gemdex/venues/holdings";
@@ -68,6 +71,81 @@ function validLadder(value: unknown): boolean {
       && t.machines.every((code) => typeof code === "string" && /^[a-z0-9_]{1,40}$/.test(code));
   });
 }
+type SettingsKey = "drops" | "fees" | "cashback" | "flywheel";
+
+/**
+ * What is wrong with a settings change, or null. Every field sent must be a known one of the right kind. A null or
+ * a NaN from a mistyped form field used to be stored as given, and the worker then ran on it.
+ */
+function patchProblem(key: SettingsKey, patch: unknown): string | null {
+  if (!patch || typeof patch !== "object" || Array.isArray(patch)) return "Send the settings to change";
+  const defaults = settingDefaults(key) as unknown as Record<string, unknown>;
+  for (const [name, value] of Object.entries(patch)) {
+    if (!(name in defaults)) return `Unknown setting: ${name}`;
+    const kind = defaults[name];
+    const ok = typeof kind === "number" ? typeof value === "number" && Number.isFinite(value) && value >= 0
+      : Array.isArray(kind) ? Array.isArray(value)
+      : typeof value === typeof kind;
+    if (!ok) return `${name} is not a valid value`;
+  }
+  return null;
+}
+
+const whole = (...values: unknown[]) => values.every((n) => Number.isSafeInteger(n) && (n as number) >= 0);
+const share = (...values: unknown[]) => values.every((n) => Number.isSafeInteger(n) && (n as number) >= 0 && (n as number) <= 10_000);
+
+/**
+ * What is wrong with the settings as they would be after a change, or null. Checked on the whole result, so a
+ * change to one field is judged with the others, and nothing the worker can't run on is ever saved: a zero between
+ * gift draws stopped every draw, and a price path a million seconds long would be loaded every second.
+ */
+function settingsProblem(key: SettingsKey, next: unknown): string | null {
+  if (key === "drops") {
+    const d = next as DropSettings;
+    if (!whole(d.minPrice, d.maxPrice, d.ivMargin, d.dailySpendCap, d.walletFloor, d.budgetPerDayFallback)) return "Dollar amounts must be whole cents and not absurdly large";
+    if (!(d.minPrice > 0) || d.maxPrice < d.minPrice) return "The sealed pack max must be at least the min price, and both above zero";
+    if (!(d.crashLo <= d.crashHi && d.crashHi <= 1)) return "Crash depths run from 0 to 100%, deepest first";
+    if (!(d.hiddenShare <= 1) || !(d.hiddenLo <= d.hiddenHi && d.hiddenHi <= 1)) return "Hidden shares run from 0 to 100%";
+    if (!whole(d.ttlSec, d.intervalFloorSec, d.newPullSec, d.lockedHoldSec, d.winCooldownSec, d.relists)) return "Seconds and counts must be whole numbers";
+    if (d.ttlSec < 10 || d.ttlSec > 3_600) return "The price can move for 10 seconds to 1 hour";
+    if (d.intervalFloorSec < 1) return "The fastest interval is at least 1 second";
+    if (d.lockedHoldSec > 86_400 || d.winCooldownSec > 86_400) return "Hold and cooldown times can be a day at most";
+    if (!validLadder(d.ladder)) return "Each pack size needs a price, an unlock amount, a weight and at least one machine";
+  }
+  if (key === "flywheel") {
+    const f = next as FlywheelSettings;
+    if (!share(f.accessBps, f.giftHoldBps, f.giftBps, f.giftSpendBps, f.saleBuybackBps, f.platformFeeBps, f.buybackMaxSlippageBps)) return "Shares are basis points from 0 to 10000";
+    if (!whole(f.giftIntervalMin, f.activePacksPerHour, f.topBlasters, f.blasterDays, f.claimHours, f.winCooldownHours, f.buybackEveryMin, f.buybackMinUsd)) return "Counts, minutes and hours must be whole numbers";
+    if (f.giftIntervalMin < 1 || f.giftIntervalMin > 1_440) return "Minutes between draws must be from 1 to 1440";
+    if (f.claimHours < 1) return "Winners need at least 1 hour to claim";
+    if (f.buybackEveryMin < 1 || f.blasterDays < 1) return "Minutes between buybacks and blaster days must be at least 1";
+    if (!f.giftTiers.every((tier) => Number.isSafeInteger(tier) && tier > 0)) return "Gift pack prices must be dollar amounts above zero";
+    if (!f.excludedWallets.every((wallet) => typeof wallet === "string" && /^[1-9A-HJ-NP-Za-km-z]{32,44}$/.test(wallet))) return "Excluded wallets must be Solana addresses";
+  }
+  if (key === "fees") {
+    const f = next as FeeSettings;
+    if (!share(f.cashbackBps, f.maxSlippageBps)) return "Shares are basis points from 0 to 10000";
+    if (!whole(f.minSwapUsd)) return "The smallest swap must be a dollar amount";
+  }
+  if (key === "cashback") {
+    const c = next as CashbackSettings;
+    if (!share(c.safetyBps, c.maxRateBps)) return "Rates are basis points from 0 to 10000";
+    if (!whole(c.dailyCapPerUser, c.snapshotsPerDay) || c.snapshotsPerDay < 1) return "The daily cap and snapshots per day must be whole numbers";
+    const tiers: unknown[] = c.tiers;
+    if (!tiers.every((tier) => {
+      const t = tier as Record<string, unknown> | null;
+      return !!t && typeof t.name === "string" && typeof t.minBalance === "number" && Number.isFinite(t.minBalance) && t.minBalance >= 0 && share(t.rateBps);
+    })) return "Each cashback tier needs a name, a balance and a rate";
+  }
+  return null;
+}
+
+/** A query value as one string. A repeated parameter arrives as a list, which would crash a string method. */
+const one = (value: unknown): string | undefined => (Array.isArray(value) ? one(value[0]) : typeof value === "string" ? value : undefined);
+const ADDRESS = /^[1-9A-HJ-NP-Za-km-z]{32,44}$/;
+/** Revealed cards that are not for sale yet. Their page stays closed until they are, so nobody gets a head start. */
+const NOT_YET_LIVE = ["PLANNED", "PACK_PAID", "OPENING", "IN_VAULT"];
+
 const HOLDING_ACTIONS = ["buyback", "list", "send"];
 const asNumber = (value: unknown): number | undefined => {
   const n = Number(value);
@@ -152,6 +230,8 @@ export async function buildServer(opts: ServerOptions) {
     },
   });
   await realtime.start();
+  // Stop reading the live feed before the database closes.
+  app.addHook("onClose", () => realtime.stop());
 
   app.setErrorHandler((error: Error & { statusCode?: number }, _request, reply) => {
     const status = error.statusCode ?? 500;
@@ -163,8 +243,10 @@ export async function buildServer(opts: ServerOptions) {
 
   app.register(async (scope) => {
     scope.get("/stream", { websocket: true }, (socket, request) => {
-      const query = request.query as { token?: string; lastSeq?: string };
-      void realtime.attach(socket as never, query.token, asNumber(query.lastSeq) ?? null);
+      const query = request.query as { token?: unknown; lastSeq?: unknown };
+      const lastSeq = asNumber(one(query.lastSeq));
+      // Anything but a whole number is no resume point. A fraction used to reach the database and fail the query.
+      void realtime.attach(socket as never, one(query.token), lastSeq !== undefined && Number.isSafeInteger(lastSeq) && lastSeq >= 0 ? lastSeq : null);
     });
   });
 
@@ -191,7 +273,12 @@ export async function buildServer(opts: ServerOptions) {
   });
 
   app.get("/listings", async (request) => {
-    const q = request.query as Record<string, string | undefined>;
+    // A repeated parameter arrives as a list, and a number can be a fraction or far too large. Those are ignored.
+    const q = Object.fromEntries(Object.entries(request.query as Record<string, unknown>).map(([name, value]) => [name, one(value)])) as Record<string, string | undefined>;
+    const dollars = (value: string | undefined) => {
+      const n = asNumber(value);
+      return n !== undefined && n >= 0 && n <= 1e9 ? usd(Math.round(n * 100) / 100) : undefined;
+    };
     const filters = [eq(listings.active, true)];
     if (q.category) filters.push(eq(listings.category, q.category));
     if (q.grader) filters.push(eq(listings.grader, q.grader));
@@ -199,17 +286,17 @@ export async function buildServer(opts: ServerOptions) {
     if (q.search) filters.push(ilike(listings.name, `%${q.search.replace(/[%_]/g, "")}%`));
     const minGrade = asNumber(q.minGrade);
     if (minGrade !== undefined) filters.push(gte(listings.gradeNum, minGrade));
-    const minPrice = asNumber(q.minPrice);
-    if (minPrice !== undefined) filters.push(gte(listings.price, usd(minPrice)));
-    const maxPrice = asNumber(q.maxPrice);
-    if (maxPrice !== undefined) filters.push(lte(listings.price, usd(maxPrice)));
+    const minPrice = dollars(q.minPrice);
+    if (minPrice !== undefined) filters.push(gte(listings.price, minPrice));
+    const maxPrice = dollars(q.maxPrice);
+    if (maxPrice !== undefined) filters.push(lte(listings.price, maxPrice));
     const year = asNumber(q.year);
-    if (year !== undefined) filters.push(eq(listings.year, year));
+    if (year !== undefined && Number.isInteger(year) && year > 0 && year < 10_000) filters.push(eq(listings.year, year));
     const minDiscount = asNumber(q.minDiscount);
     if (minDiscount !== undefined) filters.push(sql`${listings.insuredValue} > 0 and (1 - ${listings.price}::float8 / ${listings.insuredValue}) * 100 >= ${minDiscount}`);
     const sort = LISTING_SORTS[(q.sort ?? "newest") as keyof typeof LISTING_SORTS] ?? LISTING_SORTS.newest;
     const limit = Math.max(0, Math.min(Math.floor(asNumber(q.limit) ?? 100), 500));
-    const rows = await db.select().from(listings).where(and(...filters)).orderBy(sort).limit(limit).offset(Math.max(0, Math.floor(asNumber(q.offset) ?? 0)));
+    const rows = await db.select().from(listings).where(and(...filters)).orderBy(sort).limit(limit).offset(Math.max(0, Math.min(Math.floor(asNumber(q.offset) ?? 0), 1_000_000)));
     const total = await db.select({ n: count() }).from(listings).where(and(...filters));
     return { rows: rows.map(listingDto), total: total[0]?.n ?? 0 };
   });
@@ -379,11 +466,12 @@ export async function buildServer(opts: ServerOptions) {
   app.patch("/me/settings", async (request, reply) => {
     const userId = await userIdFrom(request);
     if (!requireUser(request, reply, userId)) return;
-    const body = (request.body ?? {}) as { quickBuy?: unknown; tradeLimitUsd?: unknown; autoForward?: unknown; soundOn?: unknown };
+    const sent = request.body;
+    const body = (sent && typeof sent === "object" && !Array.isArray(sent) ? sent : {}) as { quickBuy?: unknown; tradeLimitUsd?: unknown; autoForward?: unknown; soundOn?: unknown };
     const user = await loadUser(db, userId);
     // Only known keys are stored, each only when sent and well formed, so saving one setting never wipes another.
     const merged = { ...user!.settings };
-    if ("tradeLimitUsd" in body) merged.tradeLimitUsd = typeof body.tradeLimitUsd === "number" && body.tradeLimitUsd > 0 ? body.tradeLimitUsd : undefined;
+    if ("tradeLimitUsd" in body) merged.tradeLimitUsd = typeof body.tradeLimitUsd === "number" && Number.isFinite(body.tradeLimitUsd) && body.tradeLimitUsd > 0 ? body.tradeLimitUsd : undefined;
     if (typeof body.autoForward === "boolean") merged.autoForward = body.autoForward;
     if (typeof body.soundOn === "boolean") merged.soundOn = body.soundOn;
     if (Array.isArray(body.quickBuy)) merged.quickBuy = body.quickBuy.filter((n): n is number => typeof n === "number" && n > 0).slice(0, 5);
@@ -407,7 +495,7 @@ export async function buildServer(opts: ServerOptions) {
     if (refused) return { status: "rejected", reason: refused.code, message: refused.error, access: refused.access };
     const paused = await tradingPaused();
     if (paused) return { status: "rejected", reason: "drops_paused", message: paused };
-    return claimDrop(db, { userId, dropId: id, idempotencyKey, maxPrice });
+    return claimDrop(db, { userId, dropId: id, idempotencyKey, maxPrice, mode });
   });
 
   const order = async (request: Parameters<typeof userIdFrom>[0], reply: { code: (n: number) => { send: (b: unknown) => unknown } }, userId: string, input: Parameters<typeof placeOrder>[1]) => {
@@ -467,7 +555,14 @@ export async function buildServer(opts: ServerOptions) {
     if (!HOLDING_ACTIONS.includes(action) || !idempotencyKey) return reply.code(400).send({ error: "Bad order" });
     if (action === "list" && !(Number.isSafeInteger(price) && price! > 0)) return reply.code(400).send({ error: "Enter a price" });
     if (action !== "send" && !UUID.test(holdingId ?? "")) return reply.code(400).send({ error: "Bad order" });
-    if (action === "send" && (typeof nft !== "string" || !nft)) return reply.code(400).send({ error: "Bad order" });
+    if (action === "send") {
+      // Tenner pays the network fee for a send, and the worker retries what it can't build. Without this check
+      // anyone signed in could queue sends of cards they don't hold: each one that failed on chain cost the Fee
+      // Payer wallet a fee, and each one that couldn't be built was retried forever, in front of real orders.
+      if (typeof nft !== "string" || !ADDRESS.test(nft)) return reply.code(400).send({ error: "Bad order" });
+      const held = await db.select({ id: holdings.id }).from(holdings).where(and(eq(holdings.userId, userId), eq(holdings.nft, nft), eq(holdings.wallet, "trading"), eq(holdings.status, "held"))).limit(1);
+      if (!held[0]) return reply.code(400).send({ error: "That card is not in your trading wallet" });
+    }
     if (action === "list") {
       // Listings are signed by the trading wallet, so a card in the user's own wallet can't be listed from here.
       const held = await db.select({ wallet: holdings.wallet }).from(holdings).where(and(eq(holdings.id, holdingId), eq(holdings.userId, userId)));
@@ -608,7 +703,7 @@ export async function buildServer(opts: ServerOptions) {
     if (!UUID.test(id)) return reply.code(404).send({ error: "Card not found" });
     const rows = await db.select().from(drops).where(eq(drops.id, id));
     const row = rows[0];
-    if (!row) return reply.code(404).send({ error: "Card not found" });
+    if (!row || NOT_YET_LIVE.includes(row.state)) return reply.code(404).send({ error: "Card not found" });
     const userId = await userIdFrom(request);
     const limits = userId ? await db.select().from(dropLimits).where(and(eq(dropLimits.dropId, id), eq(dropLimits.userId, userId), eq(dropLimits.state, "open"))) : [];
     return { drop: pulseView(row), prices: pastPrices(row), limit: limits[0] ?? null };
@@ -621,6 +716,8 @@ export async function buildServer(opts: ServerOptions) {
     const { id } = request.params as { id: string };
     const { maxPrice } = (request.body ?? {}) as { maxPrice: number };
     if (!UUID.test(id) || !Number.isSafeInteger(maxPrice) || maxPrice <= 0) return reply.code(400).send({ error: "Enter a price" });
+    const paused = await tradingPaused();
+    if (paused) return reply.code(503).send({ error: paused });
     const rows = await db.select({ state: drops.state }).from(drops).where(eq(drops.id, id));
     if (rows[0]?.state !== "LIVE") return reply.code(400).send({ error: "This card is gone" });
     return db.transaction(async (tx) => {
@@ -664,7 +761,7 @@ export async function buildServer(opts: ServerOptions) {
     if (!(await gateFeature(reply, userId))) return;
     const { wallet, label } = (request.body ?? {}) as { wallet: string; label?: string };
     if (!/^[1-9A-HJ-NP-Za-km-z]{32,44}$/.test(wallet ?? "")) return reply.code(400).send({ error: "That is not a Solana address" });
-    await db.insert(trackedWallets).values({ userId, wallet, label: (label || wallet.slice(0, 6)).slice(0, 32) }).onConflictDoNothing();
+    await db.insert(trackedWallets).values({ userId, wallet, label: ((typeof label === "string" && label) || wallet.slice(0, 6)).slice(0, 32) }).onConflictDoNothing();
     return { ok: true };
   });
 
@@ -689,7 +786,7 @@ export async function buildServer(opts: ServerOptions) {
     if (!(await gateFeature(reply, userId))) return;
     const { nft } = request.params as { nft: string };
     const removed = await db.delete(watchlist).where(and(eq(watchlist.userId, userId), eq(watchlist.nft, nft))).returning();
-    if (removed.length === 0) await db.insert(watchlist).values({ userId, nft });
+    if (removed.length === 0) await db.insert(watchlist).values({ userId, nft }).onConflictDoNothing();
     return { watching: removed.length === 0 };
   });
 
@@ -739,13 +836,7 @@ export async function buildServer(opts: ServerOptions) {
 
   /** Why new trades can't start right now, if they can't: the kill switch, or mainnet not armed. Nothing would sign them. */
   const tradingPaused = async (): Promise<string | null> => {
-    const ops = await getSetting(db, "ops");
-    if (ops.killSwitch) return "Trading is paused right now. Try again soon.";
-    if (mode === "mainnet") {
-      const until = ops.armedUntil ? new Date(ops.armedUntil).getTime() : 0;
-      if (until <= Date.now() || ops.armedBy.length === 0) return "Trading is paused right now. Try again soon.";
-    }
-    return null;
+    return pausedBy(await getSetting(db, "ops"), mode) ? "Trading is paused right now. Try again soon." : null;
   };
 
   const requireAdmin = async (request: Parameters<typeof userIdFrom>[0], reply: { code: (n: number) => { send: (b: unknown) => unknown } }) => {
@@ -780,23 +871,13 @@ export async function buildServer(opts: ServerOptions) {
 
   app.patch("/admin/settings/:key", async (request, reply) => {
     if (!(await requireAdmin(request, reply))) return;
-    const { key } = request.params as { key: "drops" | "fees" | "cashback" | "flywheel" };
+    const { key } = request.params as { key: SettingsKey };
     if (!["drops", "fees", "cashback", "flywheel"].includes(key)) return reply.code(400).send({ error: "Unknown settings" });
-    const body = (request.body ?? {}) as Record<string, number>;
-    if (key === "flywheel") {
-      const bps = ["accessBps", "giftHoldBps", "giftBps", "giftSpendBps", "saleBuybackBps", "platformFeeBps", "buybackMaxSlippageBps"] as const;
-      if (bps.some((name) => body[name] !== undefined && !(Number.isInteger(body[name]) && body[name]! >= 0 && body[name]! <= 10_000))) {
-        return reply.code(400).send({ error: "Shares are basis points from 0 to 10000" });
-      }
-    }
-    if (key === "drops") {
-      if (!(body.minPrice! > 0) || body.maxPrice! < body.minPrice! || !(body.crashHi! <= 1) || body.crashLo! > body.crashHi! || !(body.ttlSec! > 0)) {
-        return reply.code(400).send({ error: "Those drop settings do not make sense" });
-      }
-      const ladder = (request.body as { ladder?: unknown }).ladder;
-      if (ladder !== undefined && !validLadder(ladder)) return reply.code(400).send({ error: "Each pack size needs a price, an unlock amount, a weight and at least one machine" });
-    }
-    return setSetting(db, key, request.body as never);
+    const patch = request.body ?? {};
+    // Only the fields sent are changed. Each is checked alone, then the settings are checked as they would be afterwards.
+    const problem = patchProblem(key, patch) ?? settingsProblem(key, { ...(await getSetting(db, key)), ...(patch as object) });
+    if (problem) return reply.code(400).send({ error: problem });
+    return setSetting(db, key, patch as never);
   });
 
   app.post("/admin/ops", async (request, reply) => {
@@ -821,8 +902,16 @@ export async function buildServer(opts: ServerOptions) {
     if (!/^[1-9A-HJ-NP-Za-km-z]{64,90}$/.test(sig)) return reply.code(400).send({ error: "That is not a transaction signature" });
     if (wallet !== "drops" && wallet !== "cashback") return reply.code(400).send({ error: "Pick the Drops or Cashback wallet" });
     const rows = await db.insert(treasuryMoves).values({ signature: sig, wallet, createdBy: admin.id }).onConflictDoNothing().returning();
-    if (!rows[0]) return reply.code(409).send({ error: "That transaction is already recorded" });
-    return rows[0];
+    if (rows[0]) return rows[0];
+    // Already recorded for this wallet. One that was refused can be read again: it may have been recorded before
+    // the chain had it. A booked or waiting one stands, and booking is once per wallet either way.
+    const again = await db
+      .update(treasuryMoves)
+      .set({ state: "PENDING", reason: null, amount: null, createdBy: admin.id, createdAt: new Date(), updatedAt: new Date() })
+      .where(and(eq(treasuryMoves.signature, sig), eq(treasuryMoves.wallet, wallet), eq(treasuryMoves.state, "REFUSED")))
+      .returning();
+    if (again[0]) return again[0];
+    return reply.code(409).send({ error: "That transaction is already recorded for this wallet" });
   });
 
   /** One admin arms mainnet signing for 2 hours; it stops by itself after that. Pressing again restarts the 2 hours. */

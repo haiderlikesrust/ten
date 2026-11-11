@@ -74,18 +74,17 @@ export default function WalletPage() {
       toast({ tone: "ok", title: "Added $100 of paper USDC" });
     },
   });
+  // Only the setting that changed is sent. The server leaves alone what it is not sent, and null clears the limit.
   const save = useMutation({
-    mutationFn: () =>
-      api("/me/settings", {
-        method: "PATCH",
-        body: {
-          tradeLimitUsd: limit ? Number(limit) : undefined,
-          autoForward: forward,
-        },
-      }),
+    mutationFn: (changes: { tradeLimitUsd?: number | null; autoForward?: boolean }) => api("/me/settings", { method: "PATCH", body: changes }),
     onSuccess: () => {
       void client.invalidateQueries({ queryKey: ["me"] });
       toast({ tone: "ok", title: "Saved" });
+    },
+    onError: (error, changes) => {
+      // The switch moved when it was pressed, so it goes back to what is really saved.
+      if (changes.autoForward !== undefined) setForward(!changes.autoForward);
+      toast({ tone: "bad", title: "Could not save", detail: (error as Error).message });
     },
   });
 
@@ -132,7 +131,15 @@ export default function WalletPage() {
               <div className="flex flex-col gap-2.5 px-4 pb-4">
                 <div className="num break-all px-cut bg-raised p-2.5 text-[13px]">{me.connectedWallet}</div>
                 <p className="text-[13.5px] text-mute">Cards from Pulse and packs are delivered to this wallet. Marketplace buys land in the trading wallet first.</p>
-                <Toggle checked={forward} onChange={setForward}>Forward marketplace buys here automatically</Toggle>
+                <Toggle
+                  checked={forward}
+                  onChange={(next) => {
+                    setForward(next);
+                    save.mutate({ autoForward: next });
+                  }}
+                >
+                  Forward marketplace buys here automatically
+                </Toggle>
               </div>
             </section>
 
@@ -156,7 +163,8 @@ export default function WalletPage() {
                   onSubmit={(event) => {
                     event.preventDefault();
                     // Money on hold is already promised to a buy that is settling; taking it would fail that buy.
-                    if (Number(withdrawAmount) * 1e6 > me.available) {
+                    // Rounded to whole micros first: 4.03 * 1e6 is a hair over 4030000, which refused "withdraw everything".
+                    if (Math.round(Number(withdrawAmount) * 1e6) > me.available) {
                       toast({ tone: "bad", title: "More than you have available", detail: `You can withdraw up to ${money(me.available)}. The rest is on hold for buys that are settling.` });
                       return;
                     }
@@ -177,7 +185,13 @@ export default function WalletPage() {
                 className="flex flex-col gap-2.5 px-4 pb-4"
                 onSubmit={(event) => {
                   event.preventDefault();
-                  save.mutate();
+                  const text = limit.trim();
+                  const value = Number(text);
+                  if (text && !(Number.isFinite(value) && value > 0)) {
+                    toast({ tone: "bad", title: "That limit is not a number", detail: "Use digits only, like 50. Leave it empty for no limit." });
+                    return;
+                  }
+                  save.mutate({ tradeLimitUsd: text ? value : null });
                 }}
               >
                 <Field label="Max per trade (USDC)" hint="Blocks any single marketplace buy above this"><input className={inputClass} inputMode="decimal" placeholder="No limit" value={limit} onChange={(e) => setLimit(e.target.value)} /></Field>

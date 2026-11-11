@@ -488,7 +488,8 @@ export const buybacks = pgTable("buybacks", {
  */
 export const treasuryMoves = pgTable("treasury_moves", {
   id: uuid("id").primaryKey().defaultRandom(),
-  signature: text("signature").notNull().unique(),
+  /** Recorded once per wallet: one transfer between Drops and Cashback changes both books. */
+  signature: text("signature").notNull(),
   /** "drops" or "cashback": the wallet, and the book account it changes. */
   wallet: text("wallet").notNull(),
   /** PENDING until the worker reads it, then BOOKED or REFUSED. */
@@ -499,7 +500,7 @@ export const treasuryMoves = pgTable("treasury_moves", {
   createdBy: uuid("created_by").references(() => users.id),
   createdAt: createdAt(),
   updatedAt: ts("updated_at").notNull().defaultNow(),
-});
+}, (t) => [uniqueIndex("treasury_moves_signature_wallet_idx").on(t.signature, t.wallet)]);
 
 export type GiftDraw = typeof giftDraws.$inferSelect;
 export type Drop = typeof drops.$inferSelect;

@@ -123,3 +123,13 @@ export function phaseOf(card: PulseCard, now: number, newPullSec: number): Pulse
 
 /** Against where the price opened, as a percent. */
 export const changePct = (price: number, open: number): number => (open > 0 ? (price / open - 1) * 100 : 0);
+
+/**
+ * How far under the live price a limit order sits, as text such as "12%". Null once the price has reached it.
+ * Compared in whole micros, never on a rounded percent: half a percent short is still not reached.
+ */
+export function limitGap(limit: number, price: number): string | null {
+  if (!(limit > 0) || !(price > 0) || limit >= price) return null;
+  const pct = (1 - limit / price) * 100;
+  return pct < 1 ? "under 1%" : `${Math.round(pct)}%`;
+}

@@ -4,13 +4,27 @@ import { discountPct } from "@gemdex/core";
 import { create } from "zustand";
 import { api, getToken, WS_URL } from "./api";
 import type { Drop, DropsStatus, Listing, Pull, Win } from "./types";
+import { setServerClock } from "./ui";
 
 const FEED_MAX = 80;
+/** A row flashes once when it arrives. Only recent arrivals can still be on screen, so older ids are dropped. */
+const NEW_MAX = 200;
+
+function withNew(ids: Set<string>, id: string): Set<string> {
+  const next = new Set(ids).add(id);
+  for (const oldest of next) {
+    if (next.size <= NEW_MAX) break;
+    next.delete(oldest);
+  }
+  return next;
+}
 
 type UserHandler = (event: Record<string, unknown>) => void;
 
 interface LiveState {
   connected: boolean;
+  /** True once the lists have loaded at least once, so an empty feed can be told from one still loading. */
+  loaded: boolean;
   seq: number | null;
   fresh: Listing[];
   below: Listing[];
@@ -25,8 +39,12 @@ interface LiveState {
   apply: (topic: string, payload: Record<string, unknown>) => void;
 }
 
+/** Counts loads, so a slow old answer can never overwrite a newer one. */
+let hydrateTurn = 0;
+
 export const useLive = create<LiveState>((set, get) => ({
   connected: false,
+  loaded: false,
   seq: null,
   fresh: [],
   below: [],
@@ -39,11 +57,14 @@ export const useLive = create<LiveState>((set, get) => ({
   newIds: new Set(),
 
   hydrate: async () => {
+    const turn = ++hydrateTurn;
     const [pulse, drops] = await Promise.all([
       api<{ fresh: Listing[]; below: Listing[]; pulls: Pull[] }>("/pulse"),
       api<{ live: Drop[]; recent: Drop[]; status: DropsStatus | null; pools: { drops: number; cashback: number } }>("/drops"),
     ]);
+    if (turn !== hydrateTurn) return;
     set({
+      loaded: true,
       fresh: pulse.fresh,
       below: pulse.below,
       pulls: pulse.pulls,
@@ -58,7 +79,7 @@ export const useLive = create<LiveState>((set, get) => ({
     const type = payload.type as string;
     if (topic === "pulls" && type === "pull") {
       const pull = payload.pull as Pull;
-      set((s) => (s.pulls.some((p) => p.id === pull.id) ? s : { pulls: [pull, ...s.pulls].slice(0, FEED_MAX), newIds: new Set(s.newIds).add(pull.id) }));
+      set((s) => (s.pulls.some((p) => p.id === pull.id) ? s : { pulls: [pull, ...s.pulls].slice(0, FEED_MAX), newIds: withNew(s.newIds, pull.id) }));
     }
     if (topic === "listings" && type === "listing") {
       const raw = payload.listing as Listing;
@@ -66,7 +87,7 @@ export const useLive = create<LiveState>((set, get) => ({
       set((s) => {
         if (s.fresh.some((l) => l.nft === listing.nft)) return s;
         const below = (listing.discountPct ?? 0) > 0 ? [...s.below, listing].sort((a, b) => (b.discountPct ?? 0) - (a.discountPct ?? 0)).slice(0, FEED_MAX) : s.below;
-        return { fresh: [listing, ...s.fresh].slice(0, FEED_MAX), below, newIds: new Set(s.newIds).add(listing.nft) };
+        return { fresh: [listing, ...s.fresh].slice(0, FEED_MAX), below, newIds: withNew(s.newIds, listing.nft) };
       });
     }
     if (topic === "listings" && type === "sold") {
@@ -116,6 +137,22 @@ export function onUserEvent(handler: UserHandler): () => void {
   return () => userHandlers.delete(handler);
 }
 
+let resyncRetry: ReturnType<typeof setTimeout> | null = null;
+let resyncTimer: ReturnType<typeof setInterval> | null = null;
+
+/**
+ * Loads the lists again from scratch. The stream only replays a limited number of missed events and never says when
+ * a listing is pulled or repriced, so after a locked phone or a sleeping laptop this is what clears out sold cards.
+ */
+export function resyncLive(): void {
+  if (resyncRetry) clearTimeout(resyncRetry);
+  resyncRetry = null;
+  useLive.getState().hydrate().catch(() => {
+    // Scanner has nothing to show until a load works, so try again shortly instead of waiting for the next round.
+    if (!resyncRetry) resyncRetry = setTimeout(resyncLive, 5_000);
+  });
+}
+
 let socket: WebSocket | null = null;
 let retry: ReturnType<typeof setTimeout> | null = null;
 let attempts = 0;
@@ -124,6 +161,8 @@ export function connectStream(): void {
   if (typeof window === "undefined") return;
   if (retry) clearTimeout(retry);
   if (socket && socket.readyState <= 1) socket.close();
+  // Resync now and then, so a dropped message can only ever cost a minute.
+  if (!resyncTimer) resyncTimer = setInterval(resyncLive, 60_000);
 
   const { seq } = useLive.getState();
   const params = new URLSearchParams();
@@ -136,10 +175,14 @@ export function connectStream(): void {
   ws.onopen = () => {
     attempts = 0;
     useLive.setState({ connected: true });
+    // Back after a gap, so load the lists again. The first connection of a visit skips it: the page has just loaded them.
+    if (useLive.getState().seq !== null) resyncLive();
   };
   ws.onmessage = (message) => {
     const event = JSON.parse(String(message.data)) as { seq?: number; topic: string; payload: Record<string, unknown> };
     if (event.topic === "hello") {
+      // The server's clock, when it sends one. Only this frame is used for it: replayed events carry old times.
+      if (typeof event.payload.now === "number") setServerClock(event.payload.now);
       if (useLive.getState().seq === null) useLive.setState({ seq: event.payload.seq as number });
       return;
     }

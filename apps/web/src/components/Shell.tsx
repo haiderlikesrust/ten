@@ -10,10 +10,10 @@ import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { api } from "@/lib/api";
 import { useBuySize } from "@/lib/buySize";
 import { clock, compactUsd, money, pauseReason } from "@/lib/format";
-import { connectStream, useLive } from "@/lib/live";
+import { connectStream, resyncLive, useLive } from "@/lib/live";
 import { phaseOf, usePulse, usePulseFeed } from "@/lib/pulse";
 import { signOut, useMe, useMeta, useTrade, useUserEvents } from "@/lib/session";
-import { useNow, useUi } from "@/lib/ui";
+import { serverNow, useNow, useUi } from "@/lib/ui";
 import { Logo, Sheet } from "./bits";
 import { PixelIcon, type PixelName } from "./pixel";
 import { CommandPalette, ConnectModal, RevealModal, Toasts } from "./overlays";
@@ -51,7 +51,7 @@ const useIsActive = () => {
 function useLiveCount() {
   const newPullSec = usePulse((s) => s.newPullSec);
   return usePulse((s) => {
-    const now = Date.now();
+    const now = serverNow();
     return Object.values(s.cards).filter((card) => phaseOf(card, now, newPullSec) !== "final").length;
   });
 }
@@ -360,7 +360,8 @@ function Hotkeys() {
       // Behind an open dialog (the tour, a reveal), S must not buy and 1-8 must not change page.
       if (document.querySelector('[aria-modal="true"]')) return;
       if (event.key.toLowerCase() === "s" && newest) {
-        void snipe(newest);
+        // As on the Buy button: with the live feed down, never pay more than the last price seen.
+        void snipe(newest, useLive.getState().connected ? undefined : newest.price);
         return;
       }
       const page = NAV[Number(event.key) - 1];
@@ -408,7 +409,7 @@ export function Shell({ children }: { children: ReactNode }) {
   usePulseFeed();
 
   useEffect(() => {
-    void useLive.getState().hydrate().catch(() => {});
+    resyncLive();
     useBuySize.getState().load();
     connectStream();
     try {

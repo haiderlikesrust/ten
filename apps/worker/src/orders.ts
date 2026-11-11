@@ -1,6 +1,6 @@
 import { BRAND } from "@gemdex/core";
 import {
-  activity, and, ccPacks, closeHold, emit, eq, giftDraws, holdings, inArray, listings, machines, orders, post, sales, sql, userAccount, users,
+  activity, and, ccPacks, chainTx, closeHold, emit, eq, giftDraws, holdings, inArray, listings, machines, orders, post, sales, sql, userAccount, users,
 } from "@gemdex/db";
 import { MachineDown, AddressBlocked, role, trader, type OpenResult, type Party } from "@gemdex/venues";
 import { PACK_REVIEW_MS, confirmedSignature, sendOnce } from "./chain-tx";
@@ -151,6 +151,10 @@ async function runGachaOpen(ctx: Ctx, order: Order, user: User) {
     const quote = opened.nft ? await ctx.venue.gacha.buybackQuote(opened.nft).catch(() => null) : null;
     const card = opened.card;
     await ctx.db.transaction(async (tx) => {
+      // If the worker stops after this is saved but before the order is marked done, this step runs again.
+      // The pull is recorded once: without this check each rerun added the same card to the portfolio again.
+      const recorded = await tx.select({ id: activity.id }).from(activity).where(and(eq(activity.userId, user.id), eq(activity.kind, "pull"), eq(activity.ref, memo))).limit(1);
+      if (recorded[0]) return;
       if (opened.turboBuyback) {
         const buyback = opened.turboBuyback;
         await post(tx, `turbo:${memo}`, "turbo_buyback", [{ account: "cc", delta: -buyback }, { account: userAccount(user.id), delta: buyback }]);
@@ -237,7 +241,16 @@ async function runList(ctx: Ctx, order: Order, user: User) {
 async function runSend(ctx: Ctx, order: Order, user: User) {
   const { nft } = order.params as { nft: string };
   const from = trader(user.id, user.tradingWallet);
-  const result = await sendOnce(ctx, "send", order.id, async () => ({ type: "core", from, nft, to: user.connectedWallet, memo: `${BRAND.memoPrefix}:send:${order.id}` }));
+  // Tenner pays the network fee for a send, so it only sends a card this user holds in their trading wallet.
+  // Checked until a transfer has been signed: after that it has to finish, and the holding moves at the end.
+  const started = await ctx.db.select({ id: chainTx.id }).from(chainTx).where(and(eq(chainTx.purpose, "send"), eq(chainTx.ref, order.id))).limit(1);
+  if (!started[0]) {
+    const held = await ctx.db.select({ id: holdings.id }).from(holdings).where(and(eq(holdings.userId, user.id), eq(holdings.nft, nft), eq(holdings.wallet, "trading"), eq(holdings.status, "held"))).limit(1);
+    if (!held[0]) return finish(ctx, order, "failed", {}, "That card is not in your trading wallet");
+  }
+  // A transfer that can't even be built ends after ten minutes, never retried for ever in front of other orders.
+  const deadlineAt = new Date(order.createdAt.getTime() + 10 * 60_000);
+  const result = await sendOnce(ctx, "send", order.id, async () => ({ type: "core", from, nft, to: user.connectedWallet, memo: `${BRAND.memoPrefix}:send:${order.id}` }), { deadlineAt });
   if (result.status === "pending") return retry(ctx, order);
   if (result.status === "failed") return finish(ctx, order, "failed", {}, "Transfer failed");
   await ctx.db.update(holdings).set({ wallet: "connected" }).where(and(eq(holdings.userId, user.id), eq(holdings.nft, nft)));

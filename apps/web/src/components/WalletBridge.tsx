@@ -6,6 +6,7 @@ import { useQueryClient } from "@tanstack/react-query";
 import { useEffect, useRef } from "react";
 import { api, getToken, setToken } from "@/lib/api";
 import { connectStream } from "@/lib/live";
+import { loadMe } from "@/lib/session";
 import { useUi } from "@/lib/ui";
 
 const APP_ID = process.env.NEXT_PUBLIC_PRIVY_APP_ID!;
@@ -66,7 +67,7 @@ function Bridge() {
         const { token } = await api<{ token: string }>("/auth/privy", { body: { accessToken } });
         setToken(token);
         connectStream();
-        await client.invalidateQueries();
+        await Promise.all([client.invalidateQueries(), loadMe(client)]);
         useUi.getState().setConnectOpen(false);
       } catch (error) {
         toast({ tone: "bad", title: "Could not finish sign-in", detail: error instanceof Error ? error.message : String(error) });

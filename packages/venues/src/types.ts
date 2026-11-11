@@ -40,6 +40,8 @@ export type TxStatus = "confirmed" | "failed" | "pending" | "dead";
 
 /** The send was attempted but its result is unknown, so it may still land. */
 export class AmbiguousSend extends Error {}
+/** Nothing may be signed right now: the kill switch is on, or mainnet is not armed. It lifts by itself, so work waits. */
+export class Paused extends Error {}
 /** CC says a machine cannot sell right now. Nothing has happened. */
 export class MachineDown extends Error {}
 /** CC froze this card, so it cannot move. Retrying can never help. */

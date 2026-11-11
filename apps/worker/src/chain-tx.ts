@@ -52,19 +52,17 @@ export async function sendOnce(
     return { status: "failed", signature: latest.signature };
   }
 
-  const status = latest.status === "dead" ? "dead" : await ctx.venue.chain.status(latest.signature, latest.raw);
+  let status = latest.status === "dead" ? "dead" : await ctx.venue.chain.status(latest.signature, latest.raw);
+  if (status === "pending") {
+    await broadcast(ctx, latest.raw);
+    // The second look can also come back "dead". The venue only says that once, so it must be acted on here:
+    // dropping it restarted the venue's one-minute wait, and an expired payment could sit pending for minutes more.
+    status = await ctx.venue.chain.status(latest.signature, latest.raw);
+    if (status === "pending") return { status: "pending", signature: latest.signature };
+  }
   if (status === "confirmed" || status === "failed") {
     await mark(ctx.db, latest.id, status);
     return { status, signature: latest.signature };
-  }
-  if (status === "pending") {
-    await broadcast(ctx, latest.raw);
-    const after = await ctx.venue.chain.status(latest.signature, latest.raw);
-    if (after === "confirmed" || after === "failed") {
-      await mark(ctx.db, latest.id, after);
-      return { status: after, signature: latest.signature };
-    }
-    return { status: "pending", signature: latest.signature };
   }
 
   await mark(ctx.db, latest.id, "dead");
@@ -88,6 +86,12 @@ async function fresh(
   } catch (error) {
     // Nothing was signed. Asking again would only get the same answer.
     if (error instanceof TxRefused) return { status: "failed", signature: previous, reason: error.message };
+    // Nothing was signed, and nothing sent earlier can still land. Past its deadline the send ends here: a signer
+    // that keeps refusing would otherwise be asked for ever, with the user's money on hold the whole time. The same
+    // goes for a pause (the kill switch, or mainnet no longer armed): it may last hours, and ending costs nothing.
+    if (opts.deadlineAt && Date.now() > opts.deadlineAt.getTime()) {
+      return { status: "failed", signature: previous, reason: `could not be signed: ${error instanceof Error ? error.message : String(error)}`.slice(0, 200) };
+    }
     throw error;
   }
   const inserted = await ctx.db

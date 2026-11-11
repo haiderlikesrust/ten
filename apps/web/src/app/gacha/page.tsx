@@ -53,6 +53,8 @@ function MachineDetail({ machine }: { machine: Machine }) {
   const turboOffered = !!machine.turbo && meta.data?.paper === true;
   const [turbo, setTurbo] = useState(false);
   const [count, setCount] = useState(1);
+  // True while the request is on its way. Each press is paid for, so the button waits for the answer.
+  const [opening, setOpening] = useState(false);
   const recent = useQuery({ queryKey: ["pulls", machine.code], queryFn: () => api<Pull[]>(`/pulls?packType=${machine.code}&limit=8`), refetchInterval: 15_000 });
   const total = machine.price * count;
   const short = me ? me.available < total : false;
@@ -118,8 +120,16 @@ function MachineDetail({ machine }: { machine: Machine }) {
         </div>
       </div>
       {turboOffered ? <Toggle checked={turbo} onChange={setTurbo}>Turbo: sell Commons back automatically at {machine.buybackPct}%</Toggle> : null}
-      <Button tone="snipe" className="h-12 text-[14px]" disabled={!machine.isOpen || short} onClick={() => void open(machine, { turbo: turboOffered && turbo, count })}>
-        {BOLT} {short ? "Not enough USDC" : <>Open for <span className="num text-[17px] font-bold">{money(total)}</span></>}
+      <Button
+        tone="snipe"
+        className="h-12 text-[14px]"
+        disabled={!machine.isOpen || short || opening}
+        onClick={() => {
+          setOpening(true);
+          void open(machine, { turbo: turboOffered && turbo, count }).finally(() => setOpening(false));
+        }}
+      >
+        {BOLT} {opening ? "Opening" : short ? "Not enough USDC" : <>Open for <span className="num text-[17px] font-bold">{money(total)}</span></>}
       </Button>
       <p className="text-[12.5px] text-faint">Cards go to your connected wallet. Each roll is provably random.</p>
 

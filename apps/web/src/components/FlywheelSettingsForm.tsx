@@ -51,10 +51,18 @@ export function FlywheelSettingsForm({ settings }: { settings: FlywheelSettings 
 
   const save = useMutation({
     mutationFn: () => {
-      const body: Record<string, unknown> = { buybackMinUsd: usd(Number(form.buybackMinUsd)), giftsEnabled: gifts, buybackEnabled: buyback };
-      for (const key of PERCENT) body[key] = Math.round(Number(form[key]) * 100);
-      for (const key of COUNT) body[key] = Math.round(Number(form[key]));
-      body.giftTiers = tiers.split(/[,\s]+/).map(Number).filter((n) => n > 0).map(usd).sort((a, b) => b - a);
+      // Every field must hold a plain number. A blank reads as 0 and "30 min" as nothing at all, and saving either
+      // has switched things off by accident: 0 minutes between draws stopped every draw, 0% access let everyone in.
+      const typed = (key: keyof typeof LABELS, max: number): number => {
+        const text = (form[key] ?? "").trim();
+        const n = Number(text);
+        if (!/^\d+(\.\d+)?$/.test(text) || n > max) throw new Error(`${LABELS[key]} needs a plain number`);
+        return n;
+      };
+      const body: Record<string, unknown> = { buybackMinUsd: Math.round(typed("buybackMinUsd", 1e9) * 1e6), giftsEnabled: gifts, buybackEnabled: buyback };
+      for (const key of PERCENT) body[key] = Math.round(typed(key, 100) * 100);
+      for (const key of COUNT) body[key] = Math.round(typed(key, 1e6));
+      body.giftTiers = tiers.split(/[,\s]+/).map(Number).filter((n) => n > 0 && n <= 1e6).map(usd).sort((a, b) => b - a);
       body.excludedWallets = excluded.split(/\s+/).map((w) => w.trim()).filter(Boolean);
       return api("/admin/settings/flywheel", { method: "PATCH", body });
     },

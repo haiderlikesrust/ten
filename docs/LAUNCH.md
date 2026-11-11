@@ -64,7 +64,10 @@ Each wallet is either a private key or a Privy server wallet. Set one of the two
 - [ ] Back each key up offline. Losing the server without a backup loses the wallet.
 - [ ] If a key may have leaked, turn on the kill switch, move the funds to a new wallet, and replace the variable.
 
-Keep long-term funds in a Squads multisig, not in these. **Every USDC transfer you make into or out of Drops or Cashback by hand must be recorded** in Admin → Treasury transfers by its signature. Tenner books its own transfers as they happen, but it can't know about yours, and Reconciliation holds drops when the books and the chain disagree.
+Keep long-term funds in a Squads multisig, not in these. **Every USDC transfer you make into or out of Drops or Cashback by hand must be recorded** in Admin → Treasury transfers by its signature. Tenner books its own transfers as they happen, but it can't know about yours.
+
+- **Reconciliation pauses Pulse only when a wallet holds less than its book says.** That is money missing. A wallet holding more is listed in Admin but pauses nothing: the addresses are public, and otherwise anyone could stop Pulse by sending one a fraction of a cent. So an unrecorded top-up does no harm (Pulse just doesn't spend it), and an unrecorded sweep pauses Pulse until it is recorded.
+- **A transfer is recorded once per wallet.** One moved between Drops and Cashback is recorded for each. One recorded under the wrong wallet is refused, and can then be recorded under the right one. A refused transfer can be recorded again, for example when it was pasted before the chain had it.
 
 ## 5. Launch the token
 
@@ -82,7 +85,7 @@ Use a new database and a separate Privy app.
 - [ ] `GEMDEX_MODE=mainnet`, plus `SOLANA_RPC_URL`, `SESSION_SECRET`, `ADMIN_WALLETS`, `JUPITER_API_KEY`, `CC_API_KEY`, `NEXT_PUBLIC_SOLANA_RPC`.
 - [ ] `ALLOW_MAINNET=I_UNDERSTAND_THIS_MOVES_REAL_MONEY`. Nothing starts without it.
 - [ ] Set tight limits in Admin first: daily cap $50, and only the $25 pack size switched on under Pack sizes. Each size opens once the Pulse pool has enough free money for it ($25 at $25, $500 at $3,000 by default), and open sizes mix by weight.
-- [ ] An admin presses **Arm** in Admin (`POST /admin/arm`). The arm lasts 2 hours, then signing stops by itself; **Renew arm** restarts the 2 hours. One admin is enough, so guard every wallet listed in `ADMIN_WALLETS`.
+- [ ] An admin presses **Arm** in Admin (`POST /admin/arm`). The arm lasts 2 hours, then signing stops by itself; **Renew arm** restarts the 2 hours. One admin is enough, so guard every wallet listed in `ADMIN_WALLETS`. While mainnet is not armed, Pulse drops no cards, limit orders wait, and nothing can be bought. A win that was mid-payment when the arm ran out is released after a minute, with nothing charged.
 
 **Canary, in order, watching Admin the whole time:**
 

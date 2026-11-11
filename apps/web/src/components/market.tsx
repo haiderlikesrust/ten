@@ -6,6 +6,7 @@ import Link from "next/link";
 import { memo } from "react";
 import { isTallBuy, useBuySize, type BuySize } from "@/lib/buySize";
 import { cardTitle, clock, money, packLabel } from "@/lib/format";
+import { useLive } from "@/lib/live";
 import { changePct, usePulse, type PulseCard } from "@/lib/pulse";
 import { useTrade } from "@/lib/session";
 import { useNow } from "@/lib/ui";
@@ -79,7 +80,9 @@ export function BuyButton({ card, size = "small" }: { card: PulseCard; size?: "s
   const buy = (event: React.MouseEvent) => {
     event.preventDefault();
     event.stopPropagation();
-    void snipe(card);
+    // While the live feed is down the price on this button has stopped moving, and the real one may be far higher.
+    // Then the buy goes through only at this price or less. With the feed up, first click wins at the price that second.
+    void snipe(card, useLive.getState().connected ? undefined : card.price);
   };
   if (size === "big") {
     return (

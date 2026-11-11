@@ -201,6 +201,42 @@ describe("limit orders", () => {
   });
 });
 
+describe("limit orders, after the mainnet review", () => {
+  it("never buys with an order that was cancelled after the worker read it", async () => {
+    const card = await liveCard();
+    const userId = await makeUser(usd(200));
+    await setSetting(t.db, "drops", { winCooldownSec: 0 });
+    const target = Math.max(...card.path!);
+    const order = (await t.db.insert(dropLimits).values({ dropId: card.id, userId, maxPrice: target }).returning())[0]!;
+    // The worker has read the open order and is about to claim. The user cancels in that moment.
+    await t.db.update(dropLimits).set({ state: "cancelled" }).where(eq(dropLimits.id, order.id));
+    const result = await claimDrop(t.db, { userId, dropId: card.id, idempotencyKey: `limit:${order.id}`, maxPrice: target, limitId: order.id });
+    expect(result).toMatchObject({ status: "rejected", reason: "cancelled" });
+    expect((await row(card.id)).state).toBe("LIVE");
+    expect((await t.db.select().from(dropLimits).where(eq(dropLimits.id, order.id)))[0]!.state).toBe("cancelled");
+    expect(await t.db.select().from(claims).where(eq(claims.userId, userId))).toEqual([]);
+    await setSetting(t.db, "drops", { winCooldownSec: 300 });
+  });
+
+  it("waits while mainnet is unarmed, and fills once it is armed", async () => {
+    const card = await liveCard();
+    const userId = await makeUser(usd(200));
+    await setSetting(t.db, "drops", { winCooldownSec: 0 });
+    await t.db.insert(dropLimits).values({ dropId: card.id, userId, maxPrice: Math.max(...card.path!) });
+    const mainnet = { ...ctx, rng: () => 0.99, venue: { ...venue, mode: "mainnet" } as never };
+    await setSetting(t.db, "ops", { armedBy: [], armedUntil: null });
+    await tickPulse(mainnet);
+    // It used to fill here: the buyer's money went on hold, and nothing could be signed to settle it.
+    expect((await t.db.select().from(dropLimits).where(eq(dropLimits.userId, userId)))[0]!.state).toBe("open");
+    expect((await row(card.id)).state).toBe("LIVE");
+    await setSetting(t.db, "ops", { armedBy: ["admin"], armedUntil: new Date(Date.now() + 3_600_000).toISOString() });
+    await tickPulse(mainnet);
+    expect((await t.db.select().from(dropLimits).where(eq(dropLimits.userId, userId)))[0]!.state).toBe("filled");
+    await setSetting(t.db, "ops", { armedBy: [], armedUntil: null });
+    await setSetting(t.db, "drops", { winCooldownSec: 300 });
+  });
+});
+
 describe("stand-in buyers", () => {
   it("run in paper mode and split their payment like real sales", async () => {
     const card = await liveCard();

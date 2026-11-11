@@ -10,6 +10,7 @@ import { BuySizeControl, QuickBuy } from "@/components/BuySize";
 import { useBuySize, type BuySize } from "@/lib/buySize";
 import { api } from "@/lib/api";
 import { ago, cardTitle, money } from "@/lib/format";
+import { useMediaQuery } from "@/lib/media";
 import { useTrade } from "@/lib/session";
 import type { Listing } from "@/lib/types";
 import { useNow } from "@/lib/ui";
@@ -63,6 +64,8 @@ function useDebounced<T>(value: T, ms: number): T {
 
 /** Rows grow with the Buy button, and each one is 4px taller than it paints. */
 const ROW_HEIGHT: Record<BuySize, number> = { s: 60, m: 60, l: 76 };
+/** Below md the grade and discount move under the name, three lines in all, so every row needs the tall height. */
+const PHONE_ROW_HEIGHT = 76;
 const THUMB: Record<BuySize, number> = { s: 32, m: 32, l: 44 };
 
 const COLUMNS = "md:grid-cols-[var(--thumb)_minmax(0,1fr)_76px_52px_76px_76px_44px_auto] xl:grid-cols-[var(--thumb)_minmax(0,1.3fr)_minmax(0,1fr)_84px_60px_84px_84px_52px_124px]";
@@ -122,8 +125,11 @@ export default function MarketPage() {
   });
   const rows = query.data?.rows ?? [];
   const buySize = useBuySize((s) => s.size);
-  const virtual = useVirtualizer({ count: rows.length, getScrollElement: () => parent.current, estimateSize: () => ROW_HEIGHT[buySize], overscan: 8 });
-  useEffect(() => virtual.measure(), [buySize, virtual]);
+  // The same breakpoint as the md: classes on the row.
+  const phone = useMediaQuery("(width < 48rem)");
+  const rowHeight = phone ? Math.max(ROW_HEIGHT[buySize], PHONE_ROW_HEIGHT) : ROW_HEIGHT[buySize];
+  const virtual = useVirtualizer({ count: rows.length, getScrollElement: () => parent.current, estimateSize: () => rowHeight, overscan: 8 });
+  useEffect(() => virtual.measure(), [rowHeight, virtual]);
   const update = (key: keyof Filters, value: string) => setFilters((f) => ({ ...f, [key]: value }));
   const activeCount = Object.entries(filters).filter(([key, value]) => key !== "sort" && key !== "search" && value).length;
   const active = activeCount > 0 || !!filters.search;

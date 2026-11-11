@@ -31,7 +31,7 @@ async function bookOne(ctx: Ctx, move: Move, now: number) {
     return;
   }
   if (moved.status === "failed") return refuse("That transaction failed on chain, so nothing moved");
-  if (moved.amount === 0) return refuse(`That transaction moved no USDC into or out of the ${LABEL[wallet]} wallet`);
+  if (moved.amount === 0) return refuse(`That transaction moved no USDC into or out of the ${LABEL[wallet]} wallet. If it was for the other wallet, record it again for that one.`);
   if (moved.amount < 0) {
     // The Drops wallet also holds the gift pool and buyback money, which a sweep must not take.
     const pool = await balanceOf(ctx.db, wallet);
@@ -41,7 +41,7 @@ async function bookOne(ctx: Ctx, move: Move, now: number) {
   }
 
   await ctx.db.transaction(async (tx) => {
-    await post(tx, `treasury:${move.signature}`, moved.amount > 0 ? "treasury_deposit" : "treasury_withdrawal", [
+    await post(tx, `treasury:${wallet}:${move.signature}`, moved.amount > 0 ? "treasury_deposit" : "treasury_withdrawal", [
       { account: "world", delta: -moved.amount },
       { account: wallet, delta: moved.amount },
     ]);

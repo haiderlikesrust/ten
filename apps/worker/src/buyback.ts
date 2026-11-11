@@ -47,14 +47,16 @@ export async function tickBuyback(ctx: Ctx, now = Date.now()) {
 
   if (run.stage === "PENDING") {
     if (now - run.createdAt.getTime() > GIVE_UP_MS) {
-      // A swap still signed or sent may yet land; giving up then would spend the same money twice.
-      const open = await ctx.db.select({ id: chainTx.id }).from(chainTx).where(and(eq(chainTx.purpose, "buyback_swap"), eq(chainTx.ref, run.id), inArray(chainTx.status, ["signed", "sent"]))).limit(1);
+      // A swap still signed or sent may yet land, and one that confirmed has already spent the money even if this
+      // run has not booked it yet. Giving up in either case would hand the same dollars to the next run to swap again.
+      const open = await ctx.db.select({ id: chainTx.id }).from(chainTx).where(and(eq(chainTx.purpose, "buyback_swap"), eq(chainTx.ref, run.id), inArray(chainTx.status, ["signed", "sent", "confirmed"]))).limit(1);
       if (!open[0]) return giveUp(ctx, run, "The swap didn't go through in 6 hours, so the money waits for the next run");
     }
     const usdcIn = run.usdcIn;
     const result = await sendOnce(ctx, "buyback_swap", run.id, async () => {
       // A fresh quote each attempt; the swap fails rather than fill worse than the slippage limit.
       const quote = await ctx.venue.fees.tenrQuote(usdcIn);
+      if (!(quote > 0)) throw new Error("no $TENR quote right now");
       return { type: "buyTenr", from: role("drops"), usdcIn, minOut: (quote * (10_000 - settings.buybackMaxSlippageBps)) / 10_000 };
     }, { retryFailed: true });
     if (result.status === "pending") return;

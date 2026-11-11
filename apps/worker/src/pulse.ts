@@ -1,5 +1,5 @@
 import { generatePath, priceAt, splitSale, type Micros, type PathInput } from "@gemdex/core";
-import { and, claimDrop, dropLimits, drops, emit, eq, getSetting, inArray, paperChain, post, sql, type Drop } from "@gemdex/db";
+import { and, claimDrop, dropLimits, drops, emit, eq, getSetting, inArray, paperChain, pausedBy, post, sql, type Drop } from "@gemdex/db";
 import type { PaperVenue } from "@gemdex/venues";
 import { mayBuy } from "./access";
 import type { Ctx } from "./ctx";
@@ -21,17 +21,25 @@ const LIMIT_WAITS = new Set<string>(["cooldown", "active_claim", "price_moved", 
 /** Limit orders: a user asks to buy if the price falls to their number. */
 async function runLimits(ctx: Ctx, live: Drop[], at: number) {
   if (live.length === 0) return;
+  // With the kill switch on, or mainnet unarmed, a filled order could not be settled: the buyer's money would sit
+  // on hold until an admin came back. Orders stay open and fill once trading is back.
+  if (pausedBy(await getSetting(ctx.db, "ops"), ctx.venue.mode)) return;
   const limits = await ctx.db.select().from(dropLimits).where(and(eq(dropLimits.state, "open"), inArray(dropLimits.dropId, live.map((d) => d.id))));
   for (const limit of limits) {
     const drop = live.find((d) => d.id === limit.dropId);
     if (!drop || nowPrice(drop, at) > limit.maxPrice) continue;
     // Short of the $TENR minimum: the order waits, like during a cooldown, and fires once they hold enough.
     if (!(await mayBuy(ctx, limit.userId))) continue;
-    const result = await claimDrop(ctx.db, { userId: limit.userId, dropId: limit.dropId, idempotencyKey: `limit:${limit.id}`, maxPrice: limit.maxPrice });
+    const result = await claimDrop(ctx.db, {
+      userId: limit.userId, dropId: limit.dropId, idempotencyKey: `limit:${limit.id}`, maxPrice: limit.maxPrice, mode: ctx.venue.mode, limitId: limit.id,
+    });
     // These pass on their own, so the order stays open and tries again next tick.
     if (result.status === "rejected" && LIMIT_WAITS.has(result.reason)) continue;
+    // Cancelled or replaced after this tick read it. The claim checked that under a lock, so nothing was bought.
+    if (result.status === "rejected" && result.reason === "cancelled") continue;
     const state = result.status === "won" ? "filled" : "failed";
-    await ctx.db.update(dropLimits).set({ state }).where(eq(dropLimits.id, limit.id));
+    // A win marked the order filled inside the claim itself. Only an order still open can fail.
+    if (state === "failed") await ctx.db.update(dropLimits).set({ state }).where(and(eq(dropLimits.id, limit.id), eq(dropLimits.state, "open")));
     await emit(ctx.db, `user:${limit.userId}`, { type: "limitOrder", dropId: limit.dropId, state });
   }
 }

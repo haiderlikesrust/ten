@@ -50,7 +50,7 @@ function CopyButton({ value }: { value: string }) {
 }
 
 /** SOL as a short number: enough places to see a change, no more. */
-const sol = (lamports: number) => `${(lamports / 1e9).toFixed(lamports >= 1e9 ? 3 : 4).replace(/.?0+$/, "")} SOL`;
+const sol = (lamports: number) => `${(lamports / 1e9).toFixed(lamports >= 1e9 ? 3 : 4).replace(/(\.\d*?)0+$/, "$1").replace(/\.$/, "")} SOL`;
 
 /**
  * SOL sent to the trading wallet. Tenner only trades in USDC, so SOL above a small fee reserve can be turned into

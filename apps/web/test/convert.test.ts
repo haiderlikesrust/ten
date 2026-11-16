@@ -6,9 +6,9 @@ import { checkConvert } from "../src/lib/convert";
 const USDC = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v";
 const wallet = Keypair.generate().publicKey;
 
-/** A transaction paid for by `payer`. What it does is up to the fake chain below, as in a simulation. */
-function swap(payer: PublicKey): string {
-  const ix = SystemProgram.transfer({ fromPubkey: payer, toPubkey: Keypair.generate().publicKey, lamports: 1 });
+/** A transaction paid for by `payer` and signed by `signer`. What it does is up to the fake chain below, as in a simulation. */
+function swap(payer: PublicKey, signer: PublicKey = payer): string {
+  const ix = SystemProgram.transfer({ fromPubkey: signer, toPubkey: Keypair.generate().publicKey, lamports: 1 });
   const message = new TransactionMessage({ payerKey: payer, recentBlockhash: Keypair.generate().publicKey.toBase58(), instructions: [ix] }).compileToV0Message();
   return Buffer.from(new VersionedTransaction(message).serialize()).toString("base64");
 }
@@ -46,9 +46,15 @@ describe("converting SOL to USDC", () => {
     expect(asked).toEqual([wallet.toBase58(), getAssociatedTokenAddressSync(new PublicKey(USDC), wallet, true).toBase58()]);
   });
 
-  it("refuses a swap paid for by someone else", async () => {
+  it("signs a gasless swap, where a market maker pays the network fee and signs last", async () => {
     const { connection } = chain({ lamports: 9_995_000, usdc: 162_000_000n });
-    await expect(checkConvert(input(swap(Keypair.generate().publicKey)), connection)).rejects.toThrow(/not paid by your trading wallet/);
+    // How Jupiter answered for a real wallet holding 0.06 SOL: the maker is the fee payer, the wallet signs second.
+    await expect(checkConvert(input(swap(Keypair.generate().publicKey, wallet)), connection)).resolves.toBeInstanceOf(Uint8Array);
+  });
+
+  it("refuses a swap the trading wallet isn't part of", async () => {
+    const { connection } = chain({ lamports: 9_995_000, usdc: 162_000_000n });
+    await expect(checkConvert(input(swap(Keypair.generate().publicKey)), connection)).rejects.toThrow(/not for your trading wallet/);
   });
 
   it("refuses a swap that sends the USDC elsewhere, or less of it than agreed", async () => {

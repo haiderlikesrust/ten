@@ -5,10 +5,13 @@ import { Connection, PublicKey, VersionedTransaction } from "@solana/web3.js";
 const MAX_EXTRA_LAMPORTS = 3_000_000;
 
 /**
- * Checks a SOL to USDC swap before the user signs it, by simulating it against the chain. It must be paid for by the
- * trading wallet itself, take no more SOL than the amount being converted plus fees, and put at least the agreed
- * USDC into that same wallet. The swap comes from Jupiter by way of our server, and this check is what makes
- * signing it safe even if either of them sent something else.
+ * Checks a SOL to USDC swap before the user signs it, by simulating it against the chain. The trading wallet must be
+ * one of its signers, and the swap may take no more SOL than the amount being converted plus fees, and must put at
+ * least the agreed USDC into that same wallet. The swap comes from Jupiter by way of our server, and this check is
+ * what makes signing it safe even if either of them sent something else.
+ *
+ * Who pays the network fee doesn't matter here. Jupiter often fills small swaps through a market maker that pays it
+ * and signs last, when Jupiter sends the swap: the simulation still shows exactly what leaves and reaches the wallet.
  */
 export async function checkConvert(
   input: { transaction: string; wallet: string; lamports: number; minUsdc: number; usdcMint: string; rpcUrl: string },
@@ -17,7 +20,8 @@ export async function checkConvert(
   const bytes = Uint8Array.from(atob(input.transaction), (c) => c.charCodeAt(0));
   const tx = VersionedTransaction.deserialize(bytes);
   const wallet = new PublicKey(input.wallet);
-  if (!tx.message.staticAccountKeys[0]?.equals(wallet)) throw new Error("This swap is not paid by your trading wallet, so it was not signed. Try again.");
+  const signers = tx.message.staticAccountKeys.slice(0, tx.message.header.numRequiredSignatures);
+  if (!signers.some((key) => key.equals(wallet))) throw new Error("This swap is not for your trading wallet, so it was not signed. Try again.");
 
   const usdcAccount = getAssociatedTokenAddressSync(new PublicKey(input.usdcMint), wallet, true);
   const addresses = [wallet, usdcAccount];

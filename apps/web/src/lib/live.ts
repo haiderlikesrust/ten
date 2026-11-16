@@ -25,6 +25,8 @@ interface LiveState {
   connected: boolean;
   /** True once the lists have loaded at least once, so an empty feed can be told from one still loading. */
   loaded: boolean;
+  /** People on the site right now, as the server counts them. Null until it has said. */
+  online: number | null;
   seq: number | null;
   fresh: Listing[];
   below: Listing[];
@@ -45,6 +47,7 @@ let hydrateTurn = 0;
 export const useLive = create<LiveState>((set, get) => ({
   connected: false,
   loaded: false,
+  online: null,
   seq: null,
   fresh: [],
   below: [],
@@ -183,7 +186,12 @@ export function connectStream(): void {
     if (event.topic === "hello") {
       // The server's clock, when it sends one. Only this frame is used for it: replayed events carry old times.
       if (typeof event.payload.now === "number") setServerClock(event.payload.now);
+      if (typeof event.payload.online === "number") useLive.setState({ online: event.payload.online });
       if (useLive.getState().seq === null) useLive.setState({ seq: event.payload.seq as number });
+      return;
+    }
+    if (event.topic === "online") {
+      if (typeof event.payload.count === "number") useLive.setState({ online: event.payload.count });
       return;
     }
     // A late-committed event can arrive after a newer one, so keep the highest.

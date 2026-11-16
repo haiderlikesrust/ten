@@ -10,10 +10,14 @@ const REPLAY_MAX = 2_000;
 const OVERLAP_MS = 10_000;
 
 const PUBLIC_TOPICS = new Set(["drops", "wins", "pulls", "listings", "status", "gifts"]);
+/** How often the online count is looked at, and sent out if it changed. */
+const ONLINE_EVERY_MS = 5_000;
 
 interface Client {
   socket: WebSocket;
   userTopic: string | null;
+  /** Who this is, for the online count: the account when signed in, otherwise the connection's address. */
+  who: string;
   /**
    * While a socket catches up, the live feed is already sending to it, so an event committed in that moment can
    * arrive by both routes. This holds what the socket has been sent until the two routes can no longer overlap.
@@ -38,6 +42,8 @@ export class Realtime {
   private again = false;
   private stopped = false;
   private timer: ReturnType<typeof setInterval> | null = null;
+  private onlineTimer: ReturnType<typeof setInterval> | null = null;
+  private lastOnline = -1;
   private unlisten: (() => Promise<void>) | null = null;
 
   constructor(private readonly database: Database) {}
@@ -50,13 +56,35 @@ export class Realtime {
     const listening = await this.database.sql.listen("outbox", () => void this.flush());
     this.unlisten = () => listening.unlisten();
     this.timer = setInterval(() => void this.flush(), 2_000);
+    this.onlineTimer = setInterval(() => this.announceOnline(), ONLINE_EVERY_MS);
+  }
+
+  /**
+   * People on the site right now. Each one is counted once however many tabs they have open: by account when signed
+   * in, and otherwise by address, so a household behind one address counts as one.
+   */
+  online(): number {
+    const who = new Set<string>();
+    for (const client of this.clients) if (client.socket.readyState === 1) who.add(client.who);
+    return who.size;
+  }
+
+  /** Sends the online count to everyone, only when it has changed. It goes straight out, never through the outbox. */
+  private announceOnline() {
+    const count = this.online();
+    if (count === this.lastOnline) return;
+    this.lastOnline = count;
+    const text = JSON.stringify({ topic: "online", payload: { count } });
+    for (const client of this.clients) if (client.socket.readyState === 1) client.socket.send(text);
   }
 
   /** Ends the polling and the database listener, so nothing queries a database that is closing. */
   async stop(): Promise<void> {
     this.stopped = true;
     if (this.timer) clearInterval(this.timer);
+    if (this.onlineTimer) clearInterval(this.onlineTimer);
     this.timer = null;
+    this.onlineTimer = null;
     await this.unlisten?.().catch(() => {});
     this.unlisten = null;
   }
@@ -98,15 +126,15 @@ export class Realtime {
     return PUBLIC_TOPICS.has(topic) || topic === client.userTopic;
   }
 
-  async attach(socket: WebSocket, token: string | undefined, lastSeq: number | null): Promise<void> {
+  async attach(socket: WebSocket, token: string | undefined, lastSeq: number | null, address = "unknown"): Promise<void> {
     try {
       const userId = await readSession(token);
-      const client: Client = { socket, userTopic: userId ? `user:${userId}` : null, seen: lastSeq === null ? null : new Set() };
+      const client: Client = { socket, userTopic: userId ? `user:${userId}` : null, who: userId ? `user:${userId}` : `ip:${address}`, seen: lastSeq === null ? null : new Set() };
       this.clients.add(client);
       socket.on("close", () => this.clients.delete(client));
       socket.on("error", () => this.clients.delete(client));
       // The server's clock goes along, so a browser whose own clock is off can still count down correctly.
-      socket.send(JSON.stringify({ topic: "hello", payload: { seq: this.lastSeq, now: Date.now() } }));
+      socket.send(JSON.stringify({ topic: "hello", payload: { seq: this.lastSeq, now: Date.now(), online: this.online() } }));
 
       if (lastSeq !== null) {
         // Only what this socket may see, and no price ticks: there is one a second, each replaced by the next, and

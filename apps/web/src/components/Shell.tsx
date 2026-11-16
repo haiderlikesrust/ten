@@ -2,7 +2,7 @@
 
 import { BRAND } from "@gemdex/core";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { Bot, Compass, FileText, Gift, Landmark, LayoutGrid, LogOut, Moon, Radar, Settings2, Sun, Wallet, type LucideIcon } from "lucide-react";
+import { Bot, Compass, FileText, Gift, Landmark, LayoutGrid, LogOut, Moon, Radar, Settings2, Sun, Users, Wallet, type LucideIcon } from "lucide-react";
 import dynamic from "next/dynamic";
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
@@ -308,10 +308,23 @@ function TokenCaps() {
   );
 }
 
+const X_HANDLE = "@tradewithtenner";
+const X_URL = "https://x.com/tradewithtenner";
+
+/** The X logo. Drawn here because the icon set has none. */
+function XLogo() {
+  return (
+    <svg viewBox="0 0 24 24" width="11" height="11" fill="currentColor" aria-hidden="true">
+      <path d="M18.244 2.25h3.308l-7.227 8.26 8.502 11.24H16.17l-5.214-6.817L4.99 21.75H1.68l7.73-8.835L1.254 2.25H8.08l4.713 6.231zm-1.161 17.52h1.833L7.084 4.126H5.117z" />
+    </svg>
+  );
+}
+
 function StatusBar() {
   const connected = useLive((s) => s.connected);
   const status = useLive((s) => s.status);
   const pools = useLive((s) => s.pools);
+  const online = useLive((s) => s.online);
   const now = useNow();
   const next = status?.nextDropAt ? (new Date(status.nextDropAt).getTime() - now) / 1000 : null;
   return (
@@ -320,6 +333,12 @@ function StatusBar() {
         <span className={`h-1.5 w-1.5 ${connected ? "bg-teal" : "bg-loss"}`} />
         {connected ? "Live" : "Reconnecting"}
       </span>
+      {connected && online ? (
+        <span className="flex items-center gap-1.5 whitespace-nowrap" title="People on Tenner right now">
+          <Users size={12} aria-hidden="true" />
+          <span className="num font-semibold text-bone">{online.toLocaleString()}</span> online
+        </span>
+      ) : null}
       <span className="flex items-center gap-1.5 whitespace-nowrap">
         Next card
         <span className="num font-semibold text-gold" title={pauseReason(status?.pausedFor)}>{status?.pausedFor ? "paused" : next !== null && next > 0 ? clock(next) : "soon"}</span>
@@ -336,6 +355,9 @@ function StatusBar() {
       <button type="button" onClick={() => useUi.getState().setTourOpen(true)} className="ml-auto hidden items-center gap-1 hover:text-bone md:inline-flex xl:ml-2"><Compass size={12} aria-hidden="true" /> Tour</button>
       <Link href="/treasury" className="hidden items-center gap-1 hover:text-bone md:inline-flex"><Landmark size={12} aria-hidden="true" /> Treasury</Link>
       <Link href="/terms" className="hidden items-center gap-1 hover:text-bone md:inline-flex"><FileText size={12} aria-hidden="true" /> Terms</Link>
+      <a href={X_URL} target="_blank" rel="noreferrer noopener" title="Tenner on X" className="hidden items-center gap-1 hover:text-bone md:inline-flex">
+        <XLogo /> {X_HANDLE}
+      </a>
       <span className="ml-auto md:ml-0"><ThemeButton /></span>
     </footer>
   );

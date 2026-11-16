@@ -477,3 +477,32 @@ describe("converting SOL in a trading wallet", () => {
     }
   });
 });
+
+describe("people online", () => {
+  it("counts each person once, however many tabs they have open", async () => {
+    const hello = async (url: string) => {
+      let said!: Promise<{ payload: { online: number } }>;
+      const socket = await app.injectWS(url, {}, {
+        onInit(ws) {
+          said = new Promise((resolve) => ws.once("message", (data: unknown) => resolve(JSON.parse(String(data)))));
+        },
+      });
+      return { socket, online: (await said).payload.online };
+    };
+    const { token } = (await app.inject({ method: "POST", url: "/auth/paper", payload: { handle: "online_counter" } })).json() as { token: string };
+    const first = await hello("/stream");
+    // The same visitor in a second tab: still one.
+    const second = await hello("/stream");
+    const before = second.online;
+    // Signed in, they count by account instead, so they show as someone new here.
+    const signedIn = await hello(`/stream?token=${token}`);
+    const again = await hello(`/stream?token=${token}`);
+    try {
+      expect(before).toBe(first.online);
+      expect(signedIn.online).toBe(before + 1);
+      expect(again.online).toBe(signedIn.online);
+    } finally {
+      for (const s of [first, second, signedIn, again]) s.socket.terminate();
+    }
+  });
+});

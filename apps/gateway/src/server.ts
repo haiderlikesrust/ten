@@ -247,7 +247,7 @@ export async function buildServer(opts: ServerOptions) {
       const query = request.query as { token?: unknown; lastSeq?: unknown };
       const lastSeq = asNumber(one(query.lastSeq));
       // Anything but a whole number is no resume point. A fraction used to reach the database and fail the query.
-      void realtime.attach(socket as never, one(query.token), lastSeq !== undefined && Number.isSafeInteger(lastSeq) && lastSeq >= 0 ? lastSeq : null);
+      void realtime.attach(socket as never, one(query.token), lastSeq !== undefined && Number.isSafeInteger(lastSeq) && lastSeq >= 0 ? lastSeq : null, request.ip);
     });
   });
 

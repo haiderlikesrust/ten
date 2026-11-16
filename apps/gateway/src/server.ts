@@ -15,6 +15,7 @@ import { checkAccess, tokenReaderFor, walletsOf } from "@gemdex/venues/holdings"
 import Fastify from "fastify";
 import { createPaperUser, grantPaperFunds, issueSession, loadUser, privySession, requireUser, userIdFrom } from "./auth";
 import { claimDrop } from "./claim";
+import { convertRoutes } from "./convert";
 import { flywheelRoutes } from "./flywheel";
 import { Realtime } from "./realtime";
 
@@ -929,6 +930,8 @@ export async function buildServer(opts: ServerOptions) {
 
   // The $TENR flywheel: its public page and gift claims (docs/FLYWHEEL.md).
   flywheelRoutes(app, { database, accessRefusal, tradingPaused });
+  // SOL in a trading wallet, turned into USDC when the user asks.
+  convertRoutes(app, { database, mode });
 
   return app;
 }

@@ -100,6 +100,18 @@ function Bridge() {
           const bytes = await buildWithdraw({ from: wallet.address, to, amount, usdcMint: USDC_MINT, rpcUrl: RPC_URL });
           await signAndSendTransaction({ transaction: bytes, wallet });
         },
+        // SOL above the fee reserve, swapped to USDC in the trading wallet. Jupiter builds the swap by way of our
+        // server, this browser checks it does what it says, and only then does the user approve it.
+        convertSol: async () => {
+          const wallet = wallets.find((w) => w.address === embedded?.address);
+          if (!wallet) throw new Error("Trading wallet is not ready");
+          const order = await api<{ transaction: string; requestId: string; lamports: number; usdc: number; minUsdc: number }>("/wallet/sol/order", { body: {} });
+          const { checkConvert } = await import("@/lib/convert");
+          const bytes = await checkConvert({ transaction: order.transaction, wallet: wallet.address, lamports: order.lamports, minUsdc: order.minUsdc, usdcMint: USDC_MINT, rpcUrl: RPC_URL });
+          const { signedTransaction } = await signTransaction({ transaction: bytes, wallet });
+          const result = await api<{ usdc: number | null }>("/wallet/sol/execute", { body: { signedTransaction: btoa(String.fromCharCode(...signedTransaction)), requestId: order.requestId } });
+          return { lamports: order.lamports, usdc: result.usdc ?? order.usdc };
+        },
       },
     });
     return () => useUi.setState({ wallet: null });

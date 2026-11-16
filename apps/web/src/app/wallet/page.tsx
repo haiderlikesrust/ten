@@ -49,6 +49,53 @@ function CopyButton({ value }: { value: string }) {
   );
 }
 
+/** SOL as a short number: enough places to see a change, no more. */
+const sol = (lamports: number) => `${(lamports / 1e9).toFixed(lamports >= 1e9 ? 3 : 4).replace(/.?0+$/, "")} SOL`;
+
+/**
+ * SOL sent to the trading wallet. Tenner only trades in USDC, so SOL above a small fee reserve can be turned into
+ * USDC with one approval. The swap is checked in this browser and signed by the user; the server never moves it.
+ */
+function SolPanel() {
+  const client = useQueryClient();
+  const toast = useUi((s) => s.toast);
+  const wallet = useUi((s) => s.wallet);
+  const balance = useQuery({
+    queryKey: ["wallet-sol"],
+    queryFn: () => api<{ lamports: number; reserve: number; convertible: number }>("/wallet/sol"),
+    refetchInterval: 30_000,
+    retry: false,
+  });
+  const convert = useMutation({
+    mutationFn: () => {
+      if (!wallet) throw new Error("Your trading wallet is still loading. Try again in a moment.");
+      return wallet.convertSol();
+    },
+    onSuccess: ({ lamports, usdc }) => {
+      toast({ tone: "ok", title: `Converted ${sol(lamports)} to ${money(usdc)}`, detail: "It shows in your balance within a minute" });
+      void client.invalidateQueries({ queryKey: ["wallet-sol"] });
+      void client.invalidateQueries({ queryKey: ["me"] });
+    },
+    onError: (error) => toast({ tone: "bad", title: "Could not convert", detail: (error as Error).message }),
+  });
+  const data = balance.data;
+  if (!data || data.lamports === 0) return null;
+  return (
+    <div className="flex w-full flex-col gap-2 border-t border-line pt-3">
+      <div className="flex items-baseline justify-between gap-2">
+        <span className="text-[13px] font-medium text-faint">SOL in this wallet</span>
+        <span className="num text-[15px] font-semibold">{sol(data.lamports)}</span>
+      </div>
+      {data.convertible > 0 ? (
+        <Button tone="primary" disabled={convert.isPending} onClick={() => convert.mutate()}>
+          {convert.isPending ? "Converting" : <>Convert <span className="num">{sol(data.convertible)}</span> to USDC</>}
+        </Button>
+      ) : null}
+      <p className="text-[12.5px] text-faint">{sol(data.reserve)} stays here for network fees, like withdrawals. You approve each conversion yourself.</p>
+    </div>
+  );
+}
+
 export default function WalletPage() {
   const me = useMe();
   const meta = useMeta();
@@ -112,7 +159,7 @@ export default function WalletPage() {
 
         <div className="grid grid-cols-1 gap-2 md:grid-cols-2 xl:grid-cols-3">
           <section className="slab min-w-0 self-start">
-            <SectionTitle right={<Pill>Solana USDC only</Pill>}>Deposit</SectionTitle>
+            <SectionTitle right={<Pill>{paper ? "Solana USDC only" : "USDC or SOL"}</Pill>}>Deposit</SectionTitle>
             <div className="flex flex-col items-center gap-3 p-4 pt-1">
               <div className="px-cut bg-white p-3.5"><QRCodeSVG value={me.tradingWallet} size={156} /></div>
               <div className="num w-full break-all px-cut bg-raised p-2.5 text-center text-[13px]">{me.tradingWallet}</div>
@@ -120,6 +167,7 @@ export default function WalletPage() {
                 <CopyButton value={me.tradingWallet} />
                 {paper ? <Button tone="snipe" disabled={faucet.isPending} onClick={() => faucet.mutate()}>Add <span className="num text-[15px] font-bold">$100</span> paper USDC</Button> : null}
               </div>
+              {paper === false ? <SolPanel /> : null}
             </div>
           </section>
 

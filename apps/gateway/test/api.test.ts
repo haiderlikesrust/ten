@@ -428,3 +428,52 @@ describe("found in the mainnet review", () => {
     }
   });
 });
+
+describe("converting SOL in a trading wallet", () => {
+  it("offers what is above the fee reserve, asks Jupiter for that amount, and sends back what the user signed", async () => {
+    const headers = await login("sol_holder");
+    const me = (await app.inject({ url: "/me", headers })).json() as { tradingWallet: string };
+    // Paper has no SOL to convert.
+    expect((await app.inject({ url: "/wallet/sol", headers })).statusCode).toBe(404);
+
+    let lamports = 5_000_000;
+    const jupiter: string[] = [];
+    const realFetch = globalThis.fetch;
+    const savedRpc = process.env.SOLANA_RPC_URL;
+    process.env.SOLANA_RPC_URL = "http://rpc.test";
+    globalThis.fetch = (async (url: string | URL, init?: RequestInit) => {
+      const target = String(url);
+      if (target === "http://rpc.test") return new Response(JSON.stringify({ result: { value: lamports } }));
+      jupiter.push(target.includes("/execute") ? `execute ${String(init?.body)}` : target);
+      if (target.includes("/order")) return new Response(JSON.stringify({ transaction: "c2lnbmVk", requestId: "req-1", outAmount: "162000000" }));
+      return new Response(JSON.stringify({ status: "Success", signature: "sig", outputAmountResult: "161900000" }));
+    }) as typeof fetch;
+    const real = await buildServer({ database: t, mode: "mainnet" });
+    try {
+      expect((await real.inject({ url: "/wallet/sol" })).statusCode).toBe(401);
+      // Under the reserve: nothing to convert, and no order.
+      expect((await real.inject({ url: "/wallet/sol", headers })).json()).toEqual({ lamports, reserve: 10_000_000, convertible: 0 });
+      expect((await real.inject({ method: "POST", url: "/wallet/sol/order", headers, payload: {} })).statusCode).toBe(400);
+      expect(jupiter).toEqual([]);
+
+      lamports = 1_000_000_000;
+      expect((await real.inject({ url: "/wallet/sol", headers })).json()).toMatchObject({ convertible: 990_000_000 });
+      const order = (await real.inject({ method: "POST", url: "/wallet/sol/order", headers, payload: {} })).json() as Record<string, unknown>;
+      // Everything above the reserve, for this user's own wallet, held to 1% under the quote.
+      expect(order).toMatchObject({ transaction: "c2lnbmVk", requestId: "req-1", lamports: 990_000_000, usdc: 162_000_000, minUsdc: 160_380_000 });
+      const asked = new URL(jupiter[0]!);
+      expect(asked.searchParams.get("amount")).toBe("990000000");
+      expect(asked.searchParams.get("taker")).toBe(me.tradingWallet);
+      expect(asked.searchParams.get("outputMint")).toBe("EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v");
+
+      expect((await real.inject({ method: "POST", url: "/wallet/sol/execute", headers, payload: { requestId: "req-1" } })).statusCode).toBe(400);
+      const done = await real.inject({ method: "POST", url: "/wallet/sol/execute", headers, payload: { signedTransaction: "c2lnbmVk", requestId: "req-1" } });
+      expect(done.json()).toEqual({ signature: "sig", usdc: 161_900_000 });
+      expect(jupiter.at(-1)).toBe(`execute ${JSON.stringify({ signedTransaction: "c2lnbmVk", requestId: "req-1" })}`);
+    } finally {
+      globalThis.fetch = realFetch;
+      process.env.SOLANA_RPC_URL = savedRpc;
+      await real.close();
+    }
+  });
+});

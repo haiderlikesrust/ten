@@ -39,6 +39,8 @@ Set this in Privy under Wallet infrastructure, then Policies. Default is deny.
 - Privy Solana policies have no cumulative limits, so the worker enforces daily caps.
 - CC builds its own pack transactions. Check that they contain no lookup tables, because address conditions can fail on those. The devnet pack transaction had none.
 
+**SOL in a trading wallet.** Tenner trades in USDC only. If a user sends SOL to their trading wallet, the wallet page offers to convert everything above 0.01 SOL to USDC. The 0.01 SOL stays for the wallet's own network fees, such as withdrawals. Jupiter builds the swap through the gateway (set `JUPITER_API_KEY` on tenner-gateway too). The user's browser simulates it and refuses to sign unless the USDC lands in that same wallet. The user approves it, and deposit sync books the USDC. This policy is unchanged: the server still cannot swap a user's funds.
+
 ## 4. Treasury wallets
 
 Each wallet is either a private key or a Privy server wallet. Set one of the two variables per wallet, and mix them as you like.

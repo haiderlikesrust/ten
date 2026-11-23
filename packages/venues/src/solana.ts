@@ -17,7 +17,7 @@ import { CARDS_MINT as CARDS_ADDRESS } from "./tokens";
 import { CcRead, ccEndpointsFor, type CcEndpoints } from "./cc-read";
 import { createSigner, type AnyTx, type Signer } from "./signers";
 import {
-  AddressBlocked, AmbiguousSend, CardFrozen, MachineDown, Paused, TxRefused, role, type BuybackQuote, type ChainOp, type ChainVenue, type FeeVenue, type GachaVenue,
+  AddressBlocked, AmbiguousSend, CardFrozen, ListingGone, MachineDown, Paused, TxRefused, role, type BuybackQuote, type ChainOp, type ChainVenue, type FeeVenue, type GachaVenue,
   type GeneratedPack, type MarketVenue, type Mode, type OpenResult, type PaidPack, type Party, type PreparedTx, type Role, type TxStatus, type UsdcMoved, type Venue,
 } from "./types";
 
@@ -36,6 +36,20 @@ const JUPITER = "https://api.jup.ag/swap/v2";
 
 /** CC answers in a second or two. A hung call must not hold a worker step past its lease. */
 const CC_TIMEOUT_MS = 15_000;
+/** The newest Solana transaction version this app reads. Asking for less makes the RPC refuse newer ones outright. */
+const MAX_TX_VERSION = 1;
+
+interface TokenBalance {
+  mint: string;
+  owner?: string;
+  uiTokenAmount: { amount: string; decimals: number; uiAmountString?: string };
+}
+/** The part of a transaction this app reads: whether it failed, and the token balances before and after. */
+interface TxMeta {
+  err: unknown;
+  preTokenBalances?: TokenBalance[] | null;
+  postTokenBalances?: TokenBalance[] | null;
+}
 /** CC's submitTransaction waits for confirmation before it answers, so it gets longer. */
 const SUBMIT_TIMEOUT_MS = 45_000;
 const RPC_TIMEOUT_MS = 8_000;
@@ -524,11 +538,11 @@ class SolanaChain implements ChainVenue {
   async tenrReceivedBy(party: Party, signature: string): Promise<number> {
     const owner = (await this.address(party)).toBase58();
     const mint = this.tenrMint().toBase58();
-    const tx = await this.config.connection.getTransaction(signature, { maxSupportedTransactionVersion: 0, commitment: "confirmed" });
-    if (!tx?.meta) throw new Error(`transaction ${signature.slice(0, 8)} is not readable yet`);
-    const amount = (list: typeof tx extends null ? never : NonNullable<NonNullable<typeof tx>["meta"]>["postTokenBalances"]) =>
+    const tx = await this.readTx(signature);
+    if (!tx || tx === "unreadable") throw new Error(`transaction ${signature.slice(0, 8)} is not readable yet`);
+    const amount = (list: TokenBalance[] | null | undefined) =>
       Number(list?.find((b) => b.owner === owner && b.mint === mint)?.uiTokenAmount.uiAmountString ?? 0);
-    return amount(tx?.meta?.postTokenBalances) - amount(tx?.meta?.preTokenBalances);
+    return amount(tx.postTokenBalances) - amount(tx.preTokenBalances);
   }
 
   /**
@@ -744,11 +758,11 @@ class SolanaChain implements ChainVenue {
     if (found) return "pending";
     if (await this.stillValid(JSON.parse(raw) as Envelope)) return "pending";
     // The blockhash is dead, so the bytes can never land from now on. Chain history decides what happened.
-    const landed = await connection.getTransaction(signature, { maxSupportedTransactionVersion: 0, commitment: "confirmed" });
-    if (landed && !landed.meta) return "pending";
+    const landed = await this.readTx(signature);
+    if (landed === "unreadable") return "pending";
     if (landed) {
       this.expiredSeen.delete(signature);
-      return landed.meta!.err ? "failed" : "confirmed";
+      return landed.err ? "failed" : "confirmed";
     }
     const seen = this.expiredSeen.get(signature);
     if (seen === undefined) {
@@ -791,16 +805,45 @@ class SolanaChain implements ChainVenue {
     return this.tokensIn(getAssociatedTokenAddressSync(CARDS_MINT, fee, true, mintInfo?.owner ?? TOKEN_PROGRAM_ID));
   }
 
+  /**
+   * A confirmed transaction's result and token balances, whatever its version. null: the chain has no such
+   * transaction. "unreadable": it exists but came back without its result, which RPCs briefly do.
+   *
+   * Asked over JSON-RPC directly: web3.js only requests transactions up to version 0, and wallets now send version 1
+   * ones, which the RPC then refuses to return at all. A deposit sent that way could never be booked.
+   */
+  private async readTx(signature: string): Promise<TxMeta | null | "unreadable"> {
+    const res = await (this.config.fetchImpl ?? fetch)(this.config.connection.rpcEndpoint, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        jsonrpc: "2.0", id: 1, method: "getTransaction",
+        params: [signature, { encoding: "json", commitment: "confirmed", maxSupportedTransactionVersion: MAX_TX_VERSION }],
+      }),
+      signal: AbortSignal.timeout(CC_TIMEOUT_MS),
+    });
+    if (!res.ok) throw new Error(`getTransaction ${res.status}: ${(await res.text()).slice(0, 200)}`);
+    const body = (await res.json()) as { result?: { meta?: TxMeta | null } | null; error?: { message?: string } };
+    if (body.error) throw new Error(`getTransaction: ${body.error.message ?? "RPC error"}`);
+    if (!body.result) return null;
+    return body.result.meta ?? "unreadable";
+  }
+
+  /** One party's change in one token over a read transaction, in its smallest units. */
+  private static moved(meta: TxMeta, owner: string, mint: string): number {
+    const total = (list: TokenBalance[] | null | undefined) =>
+      (list ?? []).filter((b) => b.owner === owner && b.mint === mint).reduce((sum, b) => sum + Number(b.uiTokenAmount.amount), 0);
+    return total(meta.postTokenBalances) - total(meta.preTokenBalances);
+  }
+
   /** What actually arrived, read from the confirmed transaction rather than the quote. */
   async usdcReceivedBy(party: Party, signature: string): Promise<Micros> {
     const owner = (await this.address(party)).toBase58();
-    const tx = await this.config.connection.getTransaction(signature, { maxSupportedTransactionVersion: 0, commitment: "confirmed" });
+    const tx = await this.readTx(signature);
     // RPCs can briefly return nothing for a transaction that just confirmed. Reading that as zero would book the
     // swap as worth nothing, so it is an error and the caller reads again next run.
-    if (!tx?.meta) throw new Error(`transaction ${signature.slice(0, 8)} is not readable yet`);
-    const amount = (list: typeof tx extends null ? never : NonNullable<NonNullable<typeof tx>["meta"]>["postTokenBalances"]) =>
-      Number(list?.find((b) => b.owner === owner && b.mint === this.usdc.toBase58())?.uiTokenAmount.amount ?? 0);
-    return amount(tx?.meta?.postTokenBalances) - amount(tx?.meta?.preTokenBalances);
+    if (!tx || tx === "unreadable") throw new Error(`transaction ${signature.slice(0, 8)} is not readable yet`);
+    return SolanaChain.moved(tx, owner, this.usdc.toBase58());
   }
 
   /**
@@ -808,14 +851,11 @@ class SolanaChain implements ChainVenue {
    * balances. Used for transfers made outside Tenner, such as an admin funding a treasury wallet.
    */
   async usdcMoved(party: Party, signature: string): Promise<UsdcMoved> {
-    const tx = await this.config.connection.getTransaction(signature, { maxSupportedTransactionVersion: 0, commitment: "confirmed" });
-    if (!tx?.meta) return { status: "missing" };
-    if (tx.meta.err) return { status: "failed" };
+    const tx = await this.readTx(signature);
+    if (!tx || tx === "unreadable") return { status: "missing" };
+    if (tx.err) return { status: "failed" };
     const owner = (await this.address(party)).toBase58();
-    const usdc = this.usdc.toBase58();
-    const total = (list: typeof tx.meta.postTokenBalances) =>
-      (list ?? []).filter((b) => b.owner === owner && b.mint === usdc).reduce((sum, b) => sum + Number(b.uiTokenAmount.amount), 0);
-    return { status: "ok", amount: total(tx.meta.postTokenBalances) - total(tx.meta.preTokenBalances) };
+    return { status: "ok", amount: SolanaChain.moved(tx, owner, this.usdc.toBase58()) };
   }
 
   /** A sharing config replaces the creator with a Pump Fees account, which breaks collection. */
@@ -1000,6 +1040,8 @@ class CcMarket implements MarketVenue {
       signal: AbortSignal.timeout(CC_TIMEOUT_MS),
     });
     const text = await res.text();
+    // A buy for a listing that already sold used to be asked again every two seconds, for ever.
+    if (res.status === 404 && /listing not found/i.test(text)) throw new ListingGone();
     if (!res.ok) throw new Error(`${path} ${res.status}: ${text.slice(0, 200)}`);
     return text.replace(/^"|"$/g, "");
   }

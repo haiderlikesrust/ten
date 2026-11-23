@@ -2,7 +2,7 @@ import { BRAND } from "@gemdex/core";
 import {
   activity, and, ccPacks, chainTx, closeHold, emit, eq, giftDraws, holdings, inArray, listings, machines, orders, post, sales, sql, userAccount, users,
 } from "@gemdex/db";
-import { MachineDown, AddressBlocked, role, trader, type OpenResult, type Party } from "@gemdex/venues";
+import { MachineDown, AddressBlocked, ListingGone, role, trader, type OpenResult, type Party } from "@gemdex/venues";
 import { PACK_REVIEW_MS, confirmedSignature, sendOnce } from "./chain-tx";
 import { accrueCashback } from "./cashback";
 import type { Ctx } from "./ctx";
@@ -12,6 +12,12 @@ type User = typeof users.$inferSelect;
 
 /** Nothing is reserved or paid before a pack is generated, so an outage this long can end the order cleanly. */
 const GENERATE_GIVE_UP_MS = 10 * 60_000;
+/**
+ * A Market buy that can't even be signed in this long ends failed and releases its hold. Without a deadline a buy
+ * whose listing or signer kept refusing was retried for ever, with the buyer's money held the whole time. A buy
+ * already sent still finishes: the deadline only ends one that nothing can still land for.
+ */
+const MARKET_BUY_GIVE_UP_MS = 2 * 60_000;
 const PACK_REVIEW = "Collector Crypt has not delivered or refunded this pack after 6 hours. It needs a manual review.";
 
 async function setStep(ctx: Ctx, order: Order, step: string, patch: Partial<typeof orders.$inferInsert> = {}) {
@@ -41,11 +47,24 @@ async function runMarketBuy(ctx: Ctx, order: Order, user: User) {
   if (!listing || !listing.active || listing.price !== price) return finish(ctx, order, "failed", {}, "This listing is gone or its price changed");
 
   const result = await sendOnce(ctx, "market_buy", order.id, async () => {
-    const built = await ctx.venue.market.buildBuy({ buyer, nft, price });
+    const built = await ctx.venue.market.buildBuy({ buyer, nft, price }).catch(async (error: unknown) => {
+      // Gone on the marketplace, so it comes off Tenner's too, before anyone else tries to buy it.
+      if (error instanceof ListingGone) {
+        await ctx.db.update(listings).set({ active: false }).where(eq(listings.nft, nft));
+        await emit(ctx.db, "listings", { type: "gone", nft });
+      }
+      throw error;
+    });
     return { type: "ccBuy", buyer, nft, amount: price, raw: built.raw };
-  });
+  }, { deadlineAt: new Date(order.createdAt.getTime() + MARKET_BUY_GIVE_UP_MS) });
   if (result.status === "pending") return retry(ctx, order);
-  if (result.status === "failed") return finish(ctx, order, "failed", {}, "The purchase failed on-chain");
+  if (result.status === "failed") {
+    // A reason means nothing was ever signed, so nothing was charged.
+    if (result.reason) ctx.log(`order ${order.id} market_buy gave up`, result.reason);
+    const gone = result.reason === new ListingGone().message;
+    return finish(ctx, order, "failed", {}, gone ? "This card already sold. Nothing was charged."
+      : result.reason ? "This purchase could not be completed. Nothing was charged." : "The purchase failed on-chain");
+  }
 
   const card = { name: listing.name, image: listing.image, grader: listing.grader, grade: listing.grade, category: listing.category, set: listing.set };
   await ctx.db.transaction(async (tx) => {

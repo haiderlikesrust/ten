@@ -97,7 +97,8 @@ export const useLive = create<LiveState>((set, get) => ({
         return { fresh: [listing, ...s.fresh].slice(0, FEED_MAX), below, newIds: withNew(s.newIds, listing.nft) };
       });
     }
-    if (topic === "listings" && type === "sold") {
+    // "gone": a buy found the listing already sold or taken down on the marketplace.
+    if (topic === "listings" && (type === "sold" || type === "gone")) {
       const nft = payload.nft as string;
       set((s) => ({ fresh: s.fresh.filter((l) => l.nft !== nft), below: s.below.filter((l) => l.nft !== nft), under: s.under.filter((l) => l.nft !== nft) }));
     }

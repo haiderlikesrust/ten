@@ -5,10 +5,10 @@ import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { DEFAULT_CASHBACK_SETTINGS, DEFAULT_DROP_SETTINGS, usd, type DropState } from "@gemdex/core";
 import {
-  activity, and, balanceOf, buybacks, cashbackAccruals, ccPacks, chainTx, claimDrop, claims, drops, eq, feeRuns, getSetting, holderSnapshots, holdings, holds, machines,
-  orders, placeOrder, poolCards, post, setSetting, sql, userAccount, users,
+  activity, and, balanceOf, buybacks, cashbackAccruals, ccPacks, chainTx, claimDrop, claims, drops, eq, feeRuns, getSetting, holderSnapshots, holdings, holds, listings,
+  machines, orders, placeOrder, poolCards, post, setSetting, sql, userAccount, users,
 } from "@gemdex/db";
-import { CcRead, createPaperVenue, type PaperVenue } from "@gemdex/venues";
+import { CcRead, createPaperVenue, ListingGone, type PaperVenue } from "@gemdex/venues";
 import { tickBuyback } from "../src/buyback";
 import { createDrop, reconcile, tickCashback, tickDrops, tickFees, tickOrders, tickScheduler, toEcon, type Ctx } from "../src/lib";
 import { createTestDb, type TestDb } from "../../../tools/testdb";
@@ -346,6 +346,46 @@ describe("orders", () => {
     expect(await t.db.select().from(holdings).where(eq(holdings.userId, userId))).toHaveLength(1);
     expect(await t.db.select().from(activity).where(and(eq(activity.userId, userId), eq(activity.kind, "pull")))).toHaveLength(1);
     expect(await balanceOf(t.db, userAccount(userId))).toBe(usd(75));
+  });
+
+  it("ends a Market buy whose listing already sold, releases the money and takes the listing down", async () => {
+    const base = createPaperVenue(t.db);
+    const venue = { ...base, market: { ...base.market, buildBuy: async () => { throw new ListingGone(); } } } as PaperVenue;
+    const ctx = makeCtx(venue);
+    const userId = await makeUser(base, usd(100));
+    const nft = `sold-${randomUUID()}`;
+    await t.db.insert(listings).values({ nft, name: "Sold card", price: usd(35), source: "CC" });
+    await t.db.transaction((tx) => placeOrder(tx, { userId, kind: "market_buy", params: { nft, price: usd(35) }, holdAmount: usd(35), idempotencyKey: `buy:${randomUUID()}` }));
+    await runOrders(ctx, userId, 1);
+    const order = (await t.db.select().from(orders).where(eq(orders.userId, userId)))[0]!;
+    // CC's "Listing not found" used to be asked again every two seconds, for ever, with the $35 on hold.
+    expect(order.state).toBe("failed");
+    expect(order.error).toMatch(/already sold/);
+    expect(await t.db.select().from(holds).where(and(eq(holds.userId, userId), eq(holds.status, "active")))).toEqual([]);
+    expect((await t.db.select().from(listings).where(eq(listings.nft, nft)))[0]!.active).toBe(false);
+    expect(await balanceOf(t.db, userAccount(userId))).toBe(usd(100));
+  });
+
+  it("gives up on a Market buy that can't be signed for two minutes, and releases the money", async () => {
+    const base = createPaperVenue(t.db);
+    const venue = { ...base, market: { ...base.market, buildBuy: async () => { throw new Error("CC is not answering"); } } } as PaperVenue;
+    const ctx = makeCtx(venue);
+    const userId = await makeUser(base, usd(100));
+    const nft = `stuck-${randomUUID()}`;
+    await t.db.insert(listings).values({ nft, name: "Stuck card", price: usd(35), source: "CC" });
+    await t.db.transaction((tx) => placeOrder(tx, { userId, kind: "market_buy", params: { nft, price: usd(35) }, holdAmount: usd(35), idempotencyKey: `buy:${randomUUID()}` }));
+    await runOrders(ctx, userId, 3);
+    // A passing outage is retried: nothing was signed and the deadline is still ahead.
+    expect((await t.db.select().from(orders).where(eq(orders.userId, userId)))[0]!.state).toBe("running");
+    await t.db.update(orders).set({ createdAt: new Date(Date.now() - 3 * 60_000) }).where(eq(orders.userId, userId));
+    await runOrders(ctx, userId, 1);
+    const order = (await t.db.select().from(orders).where(eq(orders.userId, userId)))[0]!;
+    expect(order.state).toBe("failed");
+    expect(order.error).toMatch(/Nothing was charged/);
+    expect(await t.db.select().from(holds).where(and(eq(holds.userId, userId), eq(holds.status, "active")))).toEqual([]);
+    expect(await t.db.select().from(chainTx).where(and(eq(chainTx.purpose, "market_buy"), eq(chainTx.ref, order.id)))).toEqual([]);
+    // The listing may still be up, so it stays.
+    expect((await t.db.select().from(listings).where(eq(listings.nft, nft)))[0]!.active).toBe(true);
   });
 
   it("only sends a card the user holds in their trading wallet", async () => {

@@ -6,7 +6,8 @@ import { ComputeBudgetProgram, Connection, Keypair, PublicKey, Transaction, Tran
 import bs58 from "bs58";
 import { LocalSigner } from "../src/signers";
 import { buildSolanaVenue, validatePackPayment, type PackIntent } from "../src/solana";
-import { AddressBlocked, CC_DEVNET, MachineDown, TxRefused, role, type CcEndpoints, type PaidPack } from "../src/index";
+import { usd } from "@gemdex/core";
+import { AddressBlocked, CC_DEVNET, ListingGone, MachineDown, TxRefused, role, type CcEndpoints, type PaidPack } from "../src/index";
 
 const USDC = new PublicKey("Gh9ZwEmdLJ8DscKNTkTqPbNwLNNBjuSzaG9Vp2KGtKJr");
 const MEMO_PROGRAM = new PublicKey("MemoSq4gqABAXKb96qnH8TysNcWxMyWCqXgDLGmfcHr");
@@ -72,6 +73,17 @@ function fakeCc(routes: Record<string, (body: Record<string, unknown> | undefine
     return new Response(JSON.stringify(reply.json ?? {}), { status: reply.status ?? 200, headers: { "Content-Type": "application/json" } });
   }) as typeof fetch;
   return { fetchImpl, calls, hits: (path: string) => calls.filter((c) => c.path === path).length };
+}
+
+/** The RPC's getTransaction over JSON-RPC, answering every request with this result. */
+function rpcAnswering(result: unknown) {
+  const requests: Array<{ method: string; params: [string, Record<string, unknown>] }> = [];
+  const fetchImpl = (async (_input: string | URL | Request, init?: RequestInit) => {
+    const body = JSON.parse(String(init?.body)) as { id: number; method: string; params: [string, Record<string, unknown>] };
+    requests.push(body);
+    return new Response(JSON.stringify({ jsonrpc: "2.0", id: body.id, result }), { status: 200, headers: { "Content-Type": "application/json" } });
+  }) as typeof fetch;
+  return { fetchImpl, requests };
 }
 
 function venueWith(rpc: ReturnType<typeof fakeRpc>, fetchImpl?: typeof fetch, extra: { endpoints?: CcEndpoints; ccApiKey?: string } = {}) {
@@ -159,19 +171,45 @@ describe("confirmation", () => {
 
   it("calls an expired payment dead only after history is empty twice, a minute apart", async () => {
     const rpc = fakeRpc({ isBlockhashValid: vi.fn(async () => ({ value: false })) });
-    const chain = venueWith(rpc).chain;
+    const history = rpcAnswering(null);
+    const chain = venueWith(rpc, history.fetchImpl).chain;
     const now = vi.spyOn(Date, "now").mockReturnValue(1_000_000);
     expect(await chain.status("sig", raw)).toBe("pending");
     now.mockReturnValue(1_030_000);
     expect(await chain.status("sig", raw)).toBe("pending");
     now.mockReturnValue(1_061_000);
     expect(await chain.status("sig", raw)).toBe("dead");
-    expect(rpc.getTransaction).toHaveBeenCalledWith("sig", expect.objectContaining({ commitment: "confirmed" }));
+    expect(history.requests[0]).toMatchObject({ method: "getTransaction", params: ["sig", { commitment: "confirmed" }] });
   });
 
   it("an expired payment that history shows landed is confirmed, not dead", async () => {
-    const rpc = fakeRpc({ isBlockhashValid: vi.fn(async () => ({ value: false })), getTransaction: vi.fn(async () => ({ meta: { err: null } })) });
-    expect(await venueWith(rpc).chain.status("sig", raw)).toBe("confirmed");
+    const rpc = fakeRpc({ isBlockhashValid: vi.fn(async () => ({ value: false })) });
+    expect(await venueWith(rpc, rpcAnswering({ meta: { err: null } }).fetchImpl).chain.status("sig", raw)).toBe("confirmed");
+  });
+});
+
+describe("reading transactions", () => {
+  it("reads a version 1 transaction, which the RPC refuses to anyone asking for version 0 at most", async () => {
+    const balance = (amount: number) => ({ mint: USDC.toBase58(), owner: player.toBase58(), uiTokenAmount: { amount: String(amount), decimals: 6 } });
+    const history = rpcAnswering({ version: 1, meta: { err: null, preTokenBalances: [balance(1_000_000)], postTokenBalances: [balance(110_240_415)] } });
+    const moved = await venueWith(fakeRpc(), history.fetchImpl).chain.usdcMoved(role("drops"), "deposit");
+    // A wallet's deposit to Drops sat "not read yet" for ever, so Pulse stayed short of money it already had.
+    expect(moved).toEqual({ status: "ok", amount: 109_240_415 });
+    expect(history.requests[0]!.params[1]).toMatchObject({ maxSupportedTransactionVersion: 1, commitment: "confirmed" });
+  });
+
+  it("says missing, never zero, for a transaction the RPC returns without its result", async () => {
+    expect(await venueWith(fakeRpc(), rpcAnswering({ meta: null }).fetchImpl).chain.usdcMoved(role("drops"), "sig")).toEqual({ status: "missing" });
+    expect(await venueWith(fakeRpc(), rpcAnswering(null).fetchImpl).chain.usdcMoved(role("drops"), "sig")).toEqual({ status: "missing" });
+  });
+});
+
+describe("Market buys", () => {
+  it("knows a listing that already sold is gone for good", async () => {
+    const api = fakeCc({ "/marketplace/buy": () => ({ status: 404, json: { statusCode: 404, message: "Listing not found", error: "Not Found" } }) });
+    const buy = venueWith(fakeRpc(), api.fetchImpl).market.buildBuy({ buyer: role("drops"), nft: "gone", price: usd(35) });
+    await expect(buy).rejects.toThrow(ListingGone);
+    await expect(buy).rejects.toThrow(TxRefused);
   });
 });
 

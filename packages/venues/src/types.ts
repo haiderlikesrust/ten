@@ -55,6 +55,13 @@ export class AddressBlocked extends Error {}
  */
 export class TxRefused extends Error {}
 
+/** The marketplace has no such listing any more: it sold or was taken down. Asking again can never help. */
+export class ListingGone extends TxRefused {
+  constructor() {
+    super("This listing is gone: it sold or was taken down");
+  }
+}
+
 export interface ChainVenue {
   prepare(op: ChainOp): Promise<PreparedTx>;
   simulate(raw: string): Promise<{ ok: boolean; reason?: string }>;

@@ -318,8 +318,8 @@ function TokenCaps() {
   );
 }
 
-const X_HANDLE = "@tradewithtenner";
-const X_URL = "https://x.com/tradewithtenner";
+const X_HANDLE = "@tradeontenner";
+const X_URL = "https://x.com/tradeontenner";
 
 /** The X logo. Drawn here because the icon set has none. */
 function XLogo() {

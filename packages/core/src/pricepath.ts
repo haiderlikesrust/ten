@@ -1,16 +1,16 @@
 import { floorToCents, type Micros } from "./money";
 
 /**
- * How a card's price behaves, and the share of cards that behave that way. Seven in ten run up
- * from their opening price and then crash or simmer. The rest go somewhere else, often higher.
+ * How a card's price behaves, and the share of cards that behave that way. About two in three run up
+ * from their opening price and then crash, so most cards give a cheap window. The rest go somewhere else.
  */
 export const PATH_MIX = {
-  crash: 0.49,
-  simmer: 0.21,
-  moon: 0.12,
-  late_run: 0.08,
-  chop: 0.06,
-  fade: 0.04,
+  crash: 0.65,
+  simmer: 0.12,
+  moon: 0.08,
+  late_run: 0.07,
+  chop: 0.05,
+  fade: 0.03,
 } as const;
 export type PathCharacter = keyof typeof PATH_MIX;
 
@@ -88,8 +88,8 @@ function shape(character: PathCharacter, bottom: number, rng: () => number): Cur
   const start = (top: number, topAt: number): Array<[number, number]> => [[0, 1], ...opening(top, topAt, between), [topAt, top]];
   switch (character) {
     case "crash": {
-      // Any time after the run up, so nobody can plan around it.
-      const dropAt = between(0.14, 0.68);
+      // Any time after the run up, so nobody can plan around it, but within the first half of its life.
+      const dropAt = between(0.1, 0.5);
       const before = 1 + (peak - 1) * between(0.2, 0.8);
       const landsAt = dropAt + between(0.16, 0.28);
       const leavesAt = landsAt + between(0.05, 0.12);

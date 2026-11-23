@@ -2,7 +2,7 @@
 
 A trading terminal for Collector Crypt graded cards, with live-priced cards funded by token creator fees.
 
-- **Pulse:** a real pulled card opens at its insured value with a live price chart for 5 minutes. Most cards run up, then simmer or crash 60-90%. Some keep climbing. The first click on Buy pays that price and gets the card
+- **Pulse:** a real pulled card opens at its insured value with a live price chart for 5 minutes. Most cards run up, then crash 60-90% within the first half of their life. Some simmer or keep climbing. The first click on Buy pays that price and gets the card
 - **Scanner:** live new listings, cards below insured value and fresh pulls
 - **Gacha Desk, Market, Portfolio, Tracker, Rewards, Admin**
 

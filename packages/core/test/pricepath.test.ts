@@ -43,16 +43,16 @@ describe("price path", () => {
     expect(dipped).toBeGreaterThan(250);
   });
 
-  it("gives seven in ten cards the run up, then simmer or crash", () => {
+  it("crashes about two cards in three", () => {
     const r = rng(2);
     const counts: Record<string, number> = {};
     for (let i = 0; i < 10_000; i++) {
       const character = pickCharacter(r());
       counts[character] = (counts[character] ?? 0) + 1;
     }
-    const share = ((counts.crash ?? 0) + (counts.simmer ?? 0)) / 10_000;
-    expect(share).toBeGreaterThan(0.68);
-    expect(share).toBeLessThan(0.72);
+    const share = (counts.crash ?? 0) / 10_000;
+    expect(share).toBeGreaterThan(0.63);
+    expect(share).toBeLessThan(0.67);
     for (const other of ["moon", "late_run", "chop", "fade"]) expect(counts[other]).toBeGreaterThan(200);
   });
 
@@ -60,7 +60,8 @@ describe("price path", () => {
     const r = rng(3);
     for (let i = 0; i < 300; i++) {
       const points = path("crash", 200, r);
-      expect(Math.max(...points.slice(0, 130))).toBeGreaterThan(usd(220));
+      // A crash can start 30 seconds in, so its run up is shorter than a late one's.
+      expect(Math.max(...points.slice(0, 130))).toBeGreaterThan(usd(214));
       const low = Math.min(...points);
       expect(low).toBeGreaterThanOrEqual(usd(20));
       expect(low).toBeLessThanOrEqual(usd(80));
@@ -86,7 +87,7 @@ describe("price path", () => {
     expect(bounced).toBeGreaterThan(450);
   });
 
-  it("can crash at any point, so nobody can plan around it", () => {
+  it("can crash at any point of the first half, so nobody can plan around it", () => {
     const r = rng(9);
     // Counts the minute each card first reaches half of its insured price. A crash takes about
     // a minute to fall, so one that starts at 30 seconds gets there in the second minute.
@@ -95,8 +96,10 @@ describe("price path", () => {
       const points = path("crash", 200, r);
       byMinute[Math.floor(points.findIndex((price) => price <= usd(100)) / 60)]!++;
     }
-    for (const crashes of byMinute.slice(1)) expect(crashes).toBeGreaterThan(30);
-    expect(Math.max(...byMinute)).toBeLessThan(450);
+    for (const crashes of byMinute.slice(1, 4)) expect(crashes).toBeGreaterThan(100);
+    expect(Math.max(...byMinute)).toBeLessThan(560);
+    // Nearly every crash has reached its cheap window before the last minute.
+    expect(byMinute[4]).toBeLessThan(50);
   });
 
   it("closes the cheap window on most crashes, so waiting for the end doesn't pay", () => {

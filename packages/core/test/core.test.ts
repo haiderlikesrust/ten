@@ -63,9 +63,9 @@ describe("budget", () => {
   it("reproduces the modelled cost per drop", () => {
     expect(recycleCost(p25)).toBe(usd(25) - Math.floor((usd(27.49) * 85) / 100));
     const burn = expectedBurn(p25, S);
-    // ($6.87 x 49%) + ($23.37 x 51%) comes back on a $25 pack, so about $9.72 is spent.
-    expect(burn.revealed).toBeGreaterThan(usd(9.5));
-    expect(burn.revealed).toBeLessThan(usd(10));
+    // ($6.87 x 65%) + ($23.37 x 35%) comes back on a $25 pack, so about $12.36 is spent.
+    expect(burn.revealed).toBeGreaterThan(usd(12.1));
+    expect(burn.revealed).toBeLessThan(usd(12.6));
     expect(burn.hidden).toBeGreaterThan(burn.revealed);
   });
   it("paces drops from budget and respects the floor", () => {

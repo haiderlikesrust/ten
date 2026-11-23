@@ -1,9 +1,9 @@
 import { describe, expect, it } from "vitest";
 import {
-  DEFAULT_CASHBACK_SETTINGS as CB, DEFAULT_DROP_SETTINGS as S, HIDDEN, REVEALED, TERMINAL,
-  assertTransition, canTransition, cashbackAmount, cashbackCapBps, discountPct, expectedBurn,
-  floorToCents, formatUsd, hiddenPrice, holderBalance, intervalSeconds, ofBps,
-  ladderMix, parseGradeNumber, parseUsd, pauseReason, pickMachine, recycleCost, splitFees,
+  DEFAULT_CASHBACK_SETTINGS as CB, DEFAULT_DROP_SETTINGS as S, DEFAULT_FLYWHEEL_SETTINGS, HIDDEN, REVEALED, TERMINAL,
+  allocateFees, assertTransition, canTransition, cashbackAmount, cashbackCapBps, discountPct, expectedBurn,
+  floorToCents, formatUsd, growthBps, hiddenPrice, holderBalance, intervalSeconds, ofBps,
+  ladderMix, parseGradeNumber, parseUsd, pauseReason, pickMachine, recycleCost, smartSplitFees, splitFees,
   tierFor, usd, type MachineEcon,
 } from "../src/index";
 
@@ -173,10 +173,58 @@ describe("fee split", () => {
       expect(cashback + drops).toBe(received);
       expect(cashback).toBe(Math.floor((received * 3000) / 10_000));
     }
-    expect(splitFees(usd(100), 3000)).toEqual({ cashback: usd(30), gifts: 0, drops: usd(70) });
-    expect(splitFees(usd(100), 3000, 2000)).toEqual({ cashback: usd(30), gifts: usd(20), drops: usd(50) });
+    expect(splitFees(usd(100), 3000)).toEqual({ cashback: usd(30), gifts: 0, drops: usd(70), buyback: 0 });
+    expect(splitFees(usd(100), 3000, 2000)).toEqual({ cashback: usd(30), gifts: usd(20), drops: usd(50), buyback: 0 });
     // Shares that add past 100% can never pay out more than came in.
-    expect(splitFees(usd(100), 9000, 2000)).toEqual({ cashback: usd(90), gifts: usd(10), drops: 0 });
+    expect(splitFees(usd(100), 9000, 2000)).toEqual({ cashback: usd(90), gifts: usd(10), drops: 0, buyback: 0 });
+  });
+});
+
+describe("smart fee split", () => {
+  const rules = { ...DEFAULT_FLYWHEEL_SETTINGS };
+
+  it("sends everything to Pulse and gifts while the pools are small", () => {
+    expect(growthBps(0, rules)).toBe(0);
+    expect(growthBps(usd(1_000), rules)).toBe(0);
+    expect(smartSplitFees(usd(100), usd(400), rules)).toEqual({ cashback: 0, gifts: usd(20), drops: usd(80), buyback: 0 });
+  });
+
+  it("moves a rising share to cashback and buyback as the pools grow, then holds at the most", () => {
+    expect(growthBps(usd(5_500), rules)).toBe(2_000);
+    expect(smartSplitFees(usd(100), usd(5_500), rules)).toEqual({ cashback: usd(10), gifts: usd(20), drops: usd(60), buyback: usd(10) });
+    expect(growthBps(usd(10_000), rules)).toBe(4_000);
+    expect(growthBps(usd(1_000_000), rules)).toBe(4_000);
+    expect(smartSplitFees(usd(100), usd(50_000), rules)).toEqual({ cashback: usd(20), gifts: usd(20), drops: usd(40), buyback: usd(20) });
+    // It never falls as the pools grow.
+    let last = 0;
+    for (let pool = 0; pool <= usd(12_000); pool += usd(37)) {
+      const bps = growthBps(pool, rules);
+      expect(bps).toBeGreaterThanOrEqual(last);
+      last = bps;
+    }
+  });
+
+  it("keeps buyback's part in Pulse drops while buyback is off", () => {
+    expect(smartSplitFees(usd(100), usd(50_000), { ...rules, buybackEnabled: false })).toEqual({ cashback: usd(20), gifts: usd(20), drops: usd(60), buyback: 0 });
+  });
+
+  it("never pays out more or less than came in, whatever the settings", () => {
+    const r = rng(9);
+    for (let i = 0; i < 20_000; i++) {
+      const received = Math.floor(r() * 1e11);
+      const s = {
+        ...rules,
+        giftBps: Math.floor(r() * 12_000), growthMaxBps: Math.floor(r() * 12_000), growthBuybackBps: Math.floor(r() * 12_000),
+        growthStartUsd: Math.floor(r() * 1e10), growthFullUsd: Math.floor(r() * 1e10), buybackEnabled: r() < 0.5,
+      };
+      const split = smartSplitFees(received, Math.floor(r() * 2e10), s);
+      expect(split.cashback + split.gifts + split.drops + split.buyback).toBe(received);
+      expect(Math.min(split.cashback, split.gifts, split.drops, split.buyback)).toBeGreaterThanOrEqual(0);
+    }
+  });
+
+  it("uses the fixed split when it's off", () => {
+    expect(allocateFees(usd(100), usd(50_000), 3000, { ...rules, smartSplit: false })).toEqual({ cashback: usd(30), gifts: usd(20), drops: usd(50), buyback: 0 });
   });
 });
 

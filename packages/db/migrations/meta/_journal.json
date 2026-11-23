@@ -50,6 +50,13 @@
       "when": 1794380000000,
       "tag": "0006_treasury_moves_per_wallet",
       "breakpoints": true
+    },
+    {
+      "idx": 7,
+      "version": "7",
+      "when": 1795450000000,
+      "tag": "0007_fee_run_buyback",
+      "breakpoints": true
     }
   ]
 }

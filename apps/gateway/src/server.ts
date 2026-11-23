@@ -116,7 +116,11 @@ function settingsProblem(key: SettingsKey, next: unknown): string | null {
   }
   if (key === "flywheel") {
     const f = next as FlywheelSettings;
-    if (!share(f.accessBps, f.giftHoldBps, f.giftBps, f.giftSpendBps, f.saleBuybackBps, f.platformFeeBps, f.buybackMaxSlippageBps)) return "Shares are basis points from 0 to 10000";
+    if (!share(f.accessBps, f.giftHoldBps, f.giftBps, f.giftSpendBps, f.saleBuybackBps, f.platformFeeBps, f.buybackMaxSlippageBps, f.growthMaxBps, f.growthBuybackBps)) return "Shares are basis points from 0 to 10000";
+    if (typeof f.smartSplit !== "boolean") return "The smart split is on or off";
+    if (!whole(f.growthStartUsd, f.growthFullUsd) || f.growthStartUsd < 0) return "Pool sizes for the smart split must be dollar amounts";
+    if (f.growthFullUsd <= f.growthStartUsd) return "The smart split's full pool size must be above where it starts";
+    if (f.giftBps + f.growthMaxBps > 10_000) return "The gift share plus the most that goes to cashback and buyback can't pass 100%";
     if (!whole(f.giftIntervalMin, f.activePacksPerHour, f.topBlasters, f.blasterDays, f.claimHours, f.winCooldownHours, f.buybackEveryMin, f.buybackMinUsd)) return "Counts, minutes and hours must be whole numbers";
     if (f.giftIntervalMin < 1 || f.giftIntervalMin > 1_440) return "Minutes between draws must be from 1 to 1440";
     if (f.claimHours < 1) return "Winners need at least 1 hour to claim";

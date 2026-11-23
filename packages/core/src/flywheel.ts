@@ -37,6 +37,21 @@ export interface FlywheelSettings {
   excludedWallets: string[];
   giftsEnabled: boolean;
   buybackEnabled: boolean;
+  /**
+   * The smart fee split. While the Pulse and gift pools are small, every fee dollar goes to them (gifts take giftBps,
+   * Pulse drops the rest) and cashback gets nothing. As those pools grow from growthStartUsd to growthFullUsd, a share
+   * rising in a straight line up to growthMaxBps goes to cashback and buyback instead. Off: the fixed split, with
+   * cashback taking the fee settings' cashbackBps.
+   */
+  smartSplit: boolean;
+  /** Pulse plus gift pools at or below this: nothing leaves them. */
+  growthStartUsd: Micros;
+  /** Pulse plus gift pools at or above this: growthMaxBps leaves them. */
+  growthFullUsd: Micros;
+  /** The most of each fee dollar that goes to cashback and buyback, once the pools are full. 4000 is 40%. */
+  growthMaxBps: number;
+  /** How that share divides: this much buys and burns $TENR, the rest is cashback. 5000 is half each. */
+  growthBuybackBps: number;
 }
 
 export const DEFAULT_FLYWHEEL_SETTINGS: FlywheelSettings = {
@@ -59,6 +74,11 @@ export const DEFAULT_FLYWHEEL_SETTINGS: FlywheelSettings = {
   excludedWallets: [],
   giftsEnabled: true,
   buybackEnabled: true,
+  smartSplit: true,
+  growthStartUsd: usd(1_000),
+  growthFullUsd: usd(10_000),
+  growthMaxBps: 4_000,
+  growthBuybackBps: 5_000,
 };
 
 /** How a Pulse sale divides: part buys and burns $TENR, the rest refills the drops pool. Dust goes to drops. */

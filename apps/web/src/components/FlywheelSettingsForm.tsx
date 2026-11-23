@@ -8,13 +8,18 @@ import { useUi } from "@/lib/ui";
 import { Button, Field, SectionTitle, Toggle, inputClass } from "./bits";
 
 /** Percent fields are stored as basis points; dollar fields as micro-USDC. */
-const PERCENT = ["accessBps", "giftHoldBps", "giftBps", "giftSpendBps", "saleBuybackBps", "buybackMaxSlippageBps"] as const;
+const PERCENT = ["accessBps", "giftHoldBps", "giftBps", "giftSpendBps", "saleBuybackBps", "buybackMaxSlippageBps", "growthMaxBps", "growthBuybackBps"] as const;
 const COUNT = ["giftIntervalMin", "activePacksPerHour", "topBlasters", "blasterDays", "claimHours", "winCooldownHours", "buybackEveryMin"] as const;
+const DOLLARS = ["buybackMinUsd", "growthStartUsd", "growthFullUsd"] as const;
 
-const LABELS: Record<(typeof PERCENT)[number] | (typeof COUNT)[number] | "buybackMinUsd", string> = {
+const LABELS: Record<(typeof PERCENT)[number] | (typeof COUNT)[number] | (typeof DOLLARS)[number], string> = {
   accessBps: "Access minimum (% of supply)",
   giftHoldBps: "Long holders and blasters need (% of supply)",
   giftBps: "Gift pool share of trading fees (%)",
+  growthMaxBps: "Smart split: most of fees to cashback + buyback (%)",
+  growthBuybackBps: "Smart split: of that, share to buyback (%)",
+  growthStartUsd: "Smart split: starts when Pulse + gift pools pass ($)",
+  growthFullUsd: "Smart split: reaches the most at ($)",
   giftSpendBps: "Most of the pool one draw may spend (%)",
   saleBuybackBps: "Share of Pulse sales to buyback and burn (%)",
   buybackMaxSlippageBps: "Buyback max slippage (%)",
@@ -37,9 +42,11 @@ export function FlywheelSettingsForm({ settings }: { settings: FlywheelSettings 
   const [excluded, setExcluded] = useState("");
   const [gifts, setGifts] = useState(settings.giftsEnabled);
   const [buyback, setBuyback] = useState(settings.buybackEnabled);
+  const [smart, setSmart] = useState(settings.smartSplit);
 
   useEffect(() => {
-    const next: Record<string, string> = { buybackMinUsd: String(settings.buybackMinUsd / 1e6) };
+    const next: Record<string, string> = {};
+    for (const key of DOLLARS) next[key] = String(settings[key] / 1e6);
     for (const key of PERCENT) next[key] = String(settings[key] / 100);
     for (const key of COUNT) next[key] = String(settings[key]);
     setForm(next);
@@ -47,6 +54,7 @@ export function FlywheelSettingsForm({ settings }: { settings: FlywheelSettings 
     setExcluded(settings.excludedWallets.join("\n"));
     setGifts(settings.giftsEnabled);
     setBuyback(settings.buybackEnabled);
+    setSmart(settings.smartSplit);
   }, [settings]);
 
   const save = useMutation({
@@ -59,7 +67,8 @@ export function FlywheelSettingsForm({ settings }: { settings: FlywheelSettings 
         if (!/^\d+(\.\d+)?$/.test(text) || n > max) throw new Error(`${LABELS[key]} needs a plain number`);
         return n;
       };
-      const body: Record<string, unknown> = { buybackMinUsd: Math.round(typed("buybackMinUsd", 1e9) * 1e6), giftsEnabled: gifts, buybackEnabled: buyback };
+      const body: Record<string, unknown> = { giftsEnabled: gifts, buybackEnabled: buyback, smartSplit: smart };
+      for (const key of DOLLARS) body[key] = Math.round(typed(key, 1e9) * 1e6);
       for (const key of PERCENT) body[key] = Math.round(typed(key, 100) * 100);
       for (const key of COUNT) body[key] = Math.round(typed(key, 1e6));
       body.giftTiers = tiers.split(/[,\s]+/).map(Number).filter((n) => n > 0 && n <= 1e6).map(usd).sort((a, b) => b - a);
@@ -77,7 +86,7 @@ export function FlywheelSettingsForm({ settings }: { settings: FlywheelSettings 
     <form className="slab" onSubmit={(e) => { e.preventDefault(); save.mutate(); }}>
       <SectionTitle right={<Button tone="primary" type="submit" className="h-8" disabled={save.isPending}>Save</Button>}>Treasury</SectionTitle>
       <div className="grid grid-cols-1 gap-3 px-4 pb-3 sm:grid-cols-2">
-        {[...PERCENT, ...COUNT, "buybackMinUsd" as const].map((key) => (
+        {[...PERCENT, ...COUNT, ...DOLLARS].map((key) => (
           <Field key={key} label={LABELS[key]}>
             <input className={`${inputClass} num`} inputMode="decimal" value={form[key] ?? ""} onChange={(e) => setForm((f) => ({ ...f, [key]: e.target.value }))} />
           </Field>
@@ -92,6 +101,7 @@ export function FlywheelSettingsForm({ settings }: { settings: FlywheelSettings 
       <div className="flex flex-wrap gap-4 px-4 pb-4">
         <Toggle checked={gifts} onChange={setGifts}>Gift draws on</Toggle>
         <Toggle checked={buyback} onChange={setBuyback}>Buyback and burn on</Toggle>
+        <Toggle checked={smart} onChange={setSmart}>Smart fee split on (off: fixed split, cashback from fee settings)</Toggle>
       </div>
     </form>
   );

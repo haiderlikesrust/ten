@@ -1,5 +1,5 @@
 // The $TENR flywheel's public page and gift claims (docs/FLYWHEEL.md).
-import { giftSlot, type Access } from "@gemdex/core";
+import { allocateFees, giftSlot, usd, type Access } from "@gemdex/core";
 import { and, balanceOf, buybacks, count, desc, eq, getSetting, giftDraws, isNull, orders, placeOrder, sql, type Database } from "@gemdex/db";
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import { loadUser, requireUser, userIdFrom } from "./auth";
@@ -30,11 +30,16 @@ export function flywheelRoutes(app: FastifyInstance, { database, accessRefusal, 
 
   /** Public: where the money goes, the rules, recent draws, and buybacks. */
   app.get("/flywheel", async () => {
-    const [settings, drops, cashback, gifts, giftReserved, waiting, inflight] = await Promise.all([
-      getSetting(db, "flywheel"), balanceOf(db, "drops"), balanceOf(db, "cashback"), balanceOf(db, "gifts"), balanceOf(db, "gift_reserved"), balanceOf(db, "revenue"), balanceOf(db, "buyback_inflight"),
+    const [settings, fees, drops, cashback, gifts, giftReserved, waiting, inflight] = await Promise.all([
+      getSetting(db, "flywheel"), getSetting(db, "fees"), balanceOf(db, "drops"), balanceOf(db, "cashback"), balanceOf(db, "gifts"), balanceOf(db, "gift_reserved"), balanceOf(db, "revenue"), balanceOf(db, "buyback_inflight"),
     ]);
     // Pulse sale money that hasn't bought $TENR yet, including a buyback in progress.
     const revenue = waiting + inflight;
+    // Where the next fee dollar would go right now, in basis points: the same rule the worker uses, at today's pools.
+    const sample = usd(1_000_000);
+    const next = allocateFees(sample, drops + gifts + giftReserved, fees.cashbackBps, settings);
+    const bps = (part: number) => Math.round((part * 10_000) / sample);
+    const split = { drops: bps(next.drops), cashback: bps(next.cashback), gifts: bps(next.gifts), buyback: bps(next.buyback) };
     const [draws, burns] = await Promise.all([
       db.select().from(giftDraws).orderBy(desc(giftDraws.slotAt)).limit(24),
       db.select().from(buybacks).orderBy(desc(buybacks.createdAt)).limit(20),
@@ -47,7 +52,10 @@ export function flywheelRoutes(app: FastifyInstance, { database, accessRefusal, 
         accessBps: settings.accessBps, giftHoldBps: settings.giftHoldBps, giftBps: settings.giftBps, giftSpendBps: settings.giftSpendBps, saleBuybackBps: settings.saleBuybackBps, giftIntervalMin: settings.giftIntervalMin,
         giftTiers: settings.giftTiers, activePacksPerHour: settings.activePacksPerHour, topBlasters: settings.topBlasters, blasterDays: settings.blasterDays,
         claimHours: settings.claimHours, platformFeeBps: settings.platformFeeBps, giftsEnabled: settings.giftsEnabled, buybackEnabled: settings.buybackEnabled,
+        smartSplit: settings.smartSplit, growthStartUsd: settings.growthStartUsd, growthFullUsd: settings.growthFullUsd,
+        growthMaxBps: settings.growthMaxBps, growthBuybackBps: settings.growthBuybackBps, cashbackBps: fees.cashbackBps,
       },
+      split,
       nextDrawAt,
       draws: draws.map(publicDraw),
       buybacks: burns.map((b) => ({ id: b.id, stage: b.stage, usdcIn: b.usdcIn, tenrOut: b.tenrOut, swapSig: b.swapSig, burnSig: b.burnSig, at: b.createdAt })),

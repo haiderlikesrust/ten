@@ -1,5 +1,5 @@
-import { splitFees, type FeeStage, BRAND } from "@gemdex/core";
-import { and, chainTx, emit, eq, feeRuns, getSetting, inArray, post } from "@gemdex/db";
+import { allocateFees, type FeeStage, BRAND } from "@gemdex/core";
+import { and, balanceOf, chainTx, emit, eq, feeRuns, getSetting, inArray, post } from "@gemdex/db";
 import { sendOnce } from "./chain-tx";
 import type { Ctx } from "./ctx";
 
@@ -10,7 +10,8 @@ async function advance(ctx: Ctx, run: Run, stage: FeeStage, patch: Partial<typeo
 }
 
 /**
- * Creator fees: claim $CARDS, swap to USDC, split between cashback, drops and the gift pool.
+ * Creator fees: claim $CARDS, swap to USDC, split between cashback, drops, the gift pool and buyback. With the smart
+ * split on, how much goes where depends on how full the Pulse and gift pools are when the swap lands.
  * Every stage resumes from saved state. Anyone can trigger collection on-chain,
  * so the input is the actual $CARDS balance, not what our own transaction collected.
  */
@@ -53,27 +54,34 @@ export async function tickFees(ctx: Ctx): Promise<void> {
     if (result.status !== "confirmed") return;
     const usdcOut = await ctx.venue.fees.usdcReceived(result.signature!);
     await ctx.db.transaction((tx) => post(tx, `fee_in:${run!.id}`, "fee_in", [{ account: "world", delta: -usdcOut }, { account: "fee", delta: usdcOut }]));
-    const { giftBps } = await getSetting(ctx.db, "flywheel");
-    const split = splitFees(usdcOut, settings.cashbackBps, giftBps);
-    await advance(ctx, run, "SWAPPED", { usdcOut, cashback: split.cashback, drops: split.drops });
-    run = { ...run, stage: "SWAPPED", usdcOut, cashback: split.cashback, drops: split.drops };
+    const flywheel = await getSetting(ctx.db, "flywheel");
+    // How full the Pulse and gift pools are decides the smart split. It is read once, here, and the split saved with
+    // the run, so a retry pays out exactly what was decided even if the pools have moved since.
+    const [drops, gifts, reserved] = await Promise.all([balanceOf(ctx.db, "drops"), balanceOf(ctx.db, "gifts"), balanceOf(ctx.db, "gift_reserved")]);
+    const split = allocateFees(usdcOut, drops + gifts + reserved, settings.cashbackBps, flywheel);
+    const saved = { usdcOut, cashback: split.cashback, drops: split.drops, buyback: split.buyback };
+    await advance(ctx, run, "SWAPPED", saved);
+    run = { ...run, stage: "SWAPPED", ...saved };
   }
 
   if (run.stage === "SWAPPED") {
-    const { cashback, drops } = { cashback: run.cashback ?? 0, drops: run.drops ?? 0 };
-    // The gift pool is whatever is left, and is held in the Drops wallet with the drops money. Runs swapped
-    // before the gift pool existed leave nothing over, so they pay out exactly as before.
-    const gifts = Math.max(0, (run.usdcOut ?? 0) - cashback - drops);
-    const result = await sendOnce(ctx, "fee_split", run.id, async () => ({ type: "split", cashback, drops: drops + gifts, memo: `${BRAND.memoPrefix}:fees:${run!.id}` }), { retryFailed: true });
+    const { cashback, drops, buyback } = { cashback: run.cashback ?? 0, drops: run.drops ?? 0, buyback: run.buyback ?? 0 };
+    // The gift pool is whatever is left. Gifts and buyback money are held in the Drops wallet with the drops money.
+    // Runs swapped before the gift pool or the smart split existed leave nothing over, so they pay out as before.
+    const gifts = Math.max(0, (run.usdcOut ?? 0) - cashback - drops - buyback);
+    const toDrops = drops + gifts + buyback;
+    const result = await sendOnce(ctx, "fee_split", run.id, async () => ({ type: "split", cashback, drops: toDrops, memo: `${BRAND.memoPrefix}:fees:${run!.id}` }), { retryFailed: true });
     if (result.status !== "confirmed") return;
     await ctx.db.transaction(async (tx) => {
       await post(tx, `fee_split:${run!.id}`, "fee_split", [
-        { account: "fee", delta: -(cashback + drops + gifts) },
+        { account: "fee", delta: -(cashback + toDrops) },
         { account: "cashback", delta: cashback },
         { account: "drops", delta: drops },
         ...(gifts > 0 ? [{ account: "gifts", delta: gifts }] : []),
+        // Waits in "revenue" with Pulse sale money for the next buyback and burn.
+        ...(buyback > 0 ? [{ account: "revenue", delta: buyback }] : []),
       ]);
-      await emit(tx, "status", { type: "feeRun", cashback, drops, gifts });
+      await emit(tx, "status", { type: "feeRun", cashback, drops, gifts, buyback });
     });
     await advance(ctx, run, "DONE");
   }

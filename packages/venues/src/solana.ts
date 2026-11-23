@@ -427,9 +427,10 @@ class SolanaChain implements ChainVenue {
       case "usdc":
         return this.own([...(await this.usdcIx(op.from, op.to, op.amount, payer)), this.memo(op.memo)], [op.from]);
       case "split": {
+        // The smart split sends cashback nothing while the pools are small, so an empty leg is left out.
         const legs = [
-          ...(await this.usdcIx(role("fee"), role("cashback"), op.cashback, payer)),
-          ...(await this.usdcIx(role("fee"), role("drops"), op.drops, payer)),
+          ...(op.cashback > 0 ? await this.usdcIx(role("fee"), role("cashback"), op.cashback, payer) : []),
+          ...(op.drops > 0 ? await this.usdcIx(role("fee"), role("drops"), op.drops, payer) : []),
         ];
         return this.own([...legs, this.memo(op.memo)], [role("fee")]);
       }

@@ -203,6 +203,8 @@ export const feeRuns = pgTable("fee_runs", {
   usdcOut: micros("usdc_out"),
   cashback: micros("cashback"),
   drops: micros("drops"),
+  /** The smart split's buyback share. The gift pool's share is what's left: usdcOut - cashback - drops - buyback. */
+  buyback: micros("buyback"),
   error: text("error"),
   createdAt: createdAt(),
   updatedAt: ts("updated_at").notNull().defaultNow(),

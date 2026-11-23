@@ -30,14 +30,14 @@ interface Treasury {
   rules: {
     accessBps: number; giftHoldBps: number; giftBps: number; giftSpendBps: number; saleBuybackBps: number; giftIntervalMin: number; giftTiers: number[];
     activePacksPerHour: number; topBlasters: number; blasterDays: number; claimHours: number;
+    smartSplit?: boolean; growthStartUsd?: number; growthFullUsd?: number; growthMaxBps?: number; growthBuybackBps?: number; cashbackBps?: number;
   };
+  /** Where the next fee dollar goes right now, in basis points. Missing from an older gateway. */
+  split?: { drops: number; cashback: number; gifts: number; buyback: number };
   draws: Draw[];
   buybacks: Array<{ id: string; stage: string; usdcIn: number; tenrOut: number | null; burnSig: string | null; at: string }>;
   totals: { usdcSpent: number; tenrBurned: number };
 }
-
-/** The trading-fee split. Cashback's share lives in fee settings, so it's 30% unless changed there. */
-const CASHBACK_SHARE = 0.3;
 
 const GROUPS: Record<GiftGroup, { name: string; icon: PixelName; stat: (r: Treasury["rules"]) => string; line: (r: Treasury["rules"]) => string }> = {
   active: {
@@ -115,13 +115,16 @@ export default function TreasuryPage() {
   const r = t?.rules;
 
   const total = t ? t.pools.drops + t.pools.cashback + t.pools.gifts + t.pools.giftReserved + t.pools.revenue : null;
-  const giftShare = r ? r.giftBps / 10_000 : 0.2;
   const burnShare = Math.round((r?.saleBuybackBps ?? 5_000) / 100);
+  // The live split from the gateway. An older gateway sends none: fall back to the fixed 30% cashback.
+  const live = t?.split ?? { cashback: 3_000, gifts: r?.giftBps ?? 2_000, buyback: 0, drops: 10_000 - 3_000 - (r?.giftBps ?? 2_000) };
   const split = [
-    { label: "Pulse drops", share: Math.max(0, 1 - CASHBACK_SHARE - giftShare), pool: t?.pools.drops, tone: "bg-gold", text: "text-gold" },
-    { label: "Cashback", share: CASHBACK_SHARE, pool: t?.pools.cashback, tone: "bg-teal", text: "text-teal" },
-    { label: "Gift pool", share: giftShare, pool: t ? t.pools.gifts + t.pools.giftReserved : undefined, tone: "bg-rare", text: "text-rare" },
-  ];
+    { label: "Pulse drops", share: live.drops / 10_000, pool: t?.pools.drops, tone: "bg-gold", text: "text-gold" },
+    { label: "Gift pool", share: live.gifts / 10_000, pool: t ? t.pools.gifts + t.pools.giftReserved : undefined, tone: "bg-rare", text: "text-rare" },
+    { label: "Cashback", share: live.cashback / 10_000, pool: t?.pools.cashback, tone: "bg-teal", text: "text-teal" },
+    { label: "Buyback and burn", share: live.buyback / 10_000, pool: undefined, tone: "bg-cherry", text: "text-cherry" },
+  ].filter((s) => s.share > 0 || s.label !== "Buyback and burn");
+  const smart = r?.smartSplit && r.growthStartUsd !== undefined && r.growthFullUsd !== undefined && r.growthMaxBps !== undefined;
 
   // The next draw, worked out locally so the countdown rolls over on time.
   const nextSlot = r ? giftSlot(now, r.giftIntervalMin) + r.giftIntervalMin * 60_000 : null;
@@ -144,14 +147,19 @@ export default function TreasuryPage() {
             <div className="mt-1.5 flex h-4 gap-[3px]" role="presentation">
               {split.map((s) => <span key={s.label} className={s.tone} style={{ width: `${s.share * 100}%` }} />)}
             </div>
-            <div className="mt-3 grid grid-cols-1 gap-2 sm:grid-cols-3">
+            <div className={`mt-3 grid grid-cols-1 gap-2 ${split.length > 3 ? "sm:grid-cols-4" : "sm:grid-cols-3"}`}>
               {split.map((s) => (
                 <div key={s.label} className="px-cut bg-raised px-3 py-2.5">
                   <div className="flex items-center gap-1.5 text-[12.5px] text-mute"><span className={`h-2 w-2 ${s.tone}`} />{s.label} <span className={`num ml-auto font-semibold ${s.text}`}>{Math.round(s.share * 100)}%</span></div>
-                  <div className="num mt-1 text-[18px] font-semibold">{money(s.pool, true)}</div>
+                  <div className="num mt-1 text-[18px] font-semibold">{s.pool === undefined ? <span className="text-[13px] font-normal text-faint">Joins the next buyback</span> : money(s.pool, true)}</div>
                 </div>
               ))}
             </div>
+            {smart ? (
+              <p className="mt-2 text-[12.5px] leading-relaxed text-faint">
+                The split moves with the pools. Until Pulse and gifts hold {money(r?.growthStartUsd, true)}, every fee dollar goes to them. From there up to {money(r?.growthFullUsd, true)}, a growing share, at most {Math.round((r?.growthMaxBps ?? 0) / 100)}%, goes to cashback and buyback.
+              </p>
+            ) : null}
             <div className="mt-5 text-[12.5px] text-faint">Every $1 winners pay on Pulse</div>
             <div className="mt-1.5 flex h-4 gap-[3px]" role="presentation">
               <span className="bg-gold" style={{ width: `${100 - burnShare}%` }} />

@@ -615,6 +615,11 @@ describe("cashback", () => {
 });
 
 describe("fee pipeline", () => {
+  // These check the fixed split. The smart split has its own test at the end.
+  beforeAll(async () => {
+    await setSetting(t.db, "flywheel", { smartSplit: false });
+  });
+
   it("splits exactly 30/20/50 between cashback, the gift pool and drops, and a crash cannot pay it twice", async () => {
     const venue = createPaperVenue(t.db, { cardsPriceUsd: 0.2 });
     const ctx = makeCtx(venue);
@@ -681,6 +686,31 @@ describe("fee pipeline", () => {
     expect(await balanceOf(t.db, "cashback")).toBe(before.cashback + usd(60));
     expect(await balanceOf(t.db, "gifts")).toBe(before.gifts + usd(40));
     expect(await balanceOf(t.db, "drops")).toBe(before.drops + usd(100));
+  });
+
+  it("smart split: once the Pulse and gift pools are full, 40% goes to cashback and buyback, decided once per run", async () => {
+    await setSetting(t.db, "flywheel", { smartSplit: true });
+    try {
+      const venue = createPaperVenue(t.db, { cardsPriceUsd: 0.2 });
+      const ctx = makeCtx(venue);
+      const pools = async () => (await balanceOf(t.db, "drops")) + (await balanceOf(t.db, "gifts")) + (await balanceOf(t.db, "gift_reserved"));
+      // Past the $10,000 where the most goes to cashback and buyback.
+      const short = usd(12_000) - (await pools());
+      if (short > 0) await fund(venue, "drops", short);
+      await venue.accrueCards(1000);
+      const before = { cashback: await balanceOf(t.db, "cashback"), drops: await balanceOf(t.db, "drops"), gifts: await balanceOf(t.db, "gifts"), revenue: await balanceOf(t.db, "revenue") };
+      for (let i = 0; i < 3; i++) await tickFees(ctx);
+      // $200 of fees: 20% gifts, 40% Pulse, 20% cashback, 20% to the buyback.
+      expect(await balanceOf(t.db, "gifts")).toBe(before.gifts + usd(40));
+      expect(await balanceOf(t.db, "drops")).toBe(before.drops + usd(80));
+      expect(await balanceOf(t.db, "cashback")).toBe(before.cashback + usd(40));
+      expect(await balanceOf(t.db, "revenue")).toBe(before.revenue + usd(40));
+      const [run] = await t.sql`select cashback, drops, buyback, usdc_out from fee_runs order by created_at desc limit 1`;
+      expect(Number(run!.buyback)).toBe(usd(40));
+      await assertBooksBalance(venue);
+    } finally {
+      await setSetting(t.db, "flywheel", { smartSplit: false });
+    }
   });
 
   it("skips amounts too small to be worth swapping", async () => {

@@ -7,7 +7,7 @@ How Tenner's money is meant to feed back into $TENR: an access minimum, buyback 
 ## The loop
 
 ```
-trading fees ($CARDS → USDC) ──► Pulse drops + cashback + gift pool ──► users and attention
+trading fees ($CARDS → USDC) ──► Pulse drops + gift pool (+ cashback and buyback as the pools grow) ──► users and attention
 Pulse sales (half of what winners pay) ──► buyback and burn of $TENR                      │
             ▲                                                                     ▼
             └──────────── $TENR volume ◄── holding $TENR to use Tenner and win gifts
@@ -55,7 +55,22 @@ Pulse sales (half of what winners pay) ──► buyback and burn of $TENR      
 ## 3. Gift packs every 30 minutes
 
 ### Funding
-- **New split of trading fees:** cashback 30%, **gift pool 20%**, drops 50% (`giftBps: 2000`, taken from the drops share).
+- **The gift pool takes 20% of trading fees** (`giftBps: 2000`). How the rest divides depends on the smart split below.
+
+### The smart fee split
+Fee USDC from a run is divided by how full the Pulse and gift pools are (`drops + gifts + gift_reserved`) at the moment the swap lands. The split is saved with the run, so a retry pays exactly what was decided. Rule: `smartSplitFees` in `packages/core/src/fees.ts`.
+
+| Pulse + gift pools | Gift pool | Pulse drops | Cashback | Buyback and burn |
+|---|---|---|---|---|
+| $1,000 or less | 20% | 80% | 0% | 0% |
+| $5,500 (halfway) | 20% | 60% | 10% | 10% |
+| $10,000 or more | 20% | 40% | 20% | 20% |
+
+- **Below `growthStartUsd` ($1,000):** every fee dollar goes to Pulse and gifts.
+- **From there to `growthFullUsd` ($10,000):** a share rising in a straight line to `growthMaxBps` (40%) goes to cashback and buyback. `growthBuybackBps` (50%) of it buys and burns $TENR, the rest is cashback. It comes out of the Pulse share, never the gift share.
+- **Buyback's part** waits in `revenue` with Pulse sale money for the next buyback run. With buyback off, it stays in Pulse drops instead.
+- **Smart split off** (`smartSplit: false`): the fixed split, with cashback taking the fee settings' `cashbackBps` (30%), the gift pool 20% and Pulse drops 50%.
+- Every number is editable in Admin → Treasury. The public Treasury page shows where the next fee dollar goes right now.
 - The gift pool is a new ledger account, `gifts`, held on-chain by the Drops wallet like the Drops pool, so it doesn't need a new role.
 - Reconciliation counts `drops + gifts` against that wallet.
 

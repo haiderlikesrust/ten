@@ -2,6 +2,7 @@
 
 import { PrivyProvider, usePrivy, useSigners } from "@privy-io/react-auth";
 import { toSolanaWalletConnectors, useExportWallet, useSignAndSendTransaction, useSignTransaction, useWallets } from "@privy-io/react-auth/solana";
+import { createSolanaRpc, createSolanaRpcSubscriptions } from "@solana/kit";
 import { useQueryClient } from "@tanstack/react-query";
 import { useEffect, useRef } from "react";
 import { api, getToken, setToken } from "@/lib/api";
@@ -15,6 +16,16 @@ const USDC_MINT = process.env.NEXT_PUBLIC_USDC_MINT || "EPjFWdd5AufqSSqeM2qN1xzy
 const RPC_URL = process.env.NEXT_PUBLIC_SOLANA_RPC || "https://api.mainnet-beta.solana.com";
 
 const connectors = toSolanaWalletConnectors();
+
+// Privy sends transactions itself (withdrawals) through this RPC. Without it, signAndSendTransaction throws
+// "No RPC configuration found for chain solana:mainnet" and the page crashes. Privy's hooks default to
+// solana:mainnet, so the site's RPC is registered under that name whatever network it points at.
+const solanaRpcs = {
+  "solana:mainnet": {
+    rpc: createSolanaRpc(RPC_URL),
+    rpcSubscriptions: createSolanaRpcSubscriptions(RPC_URL.replace(/^http/, "ws")),
+  },
+};
 
 interface LinkedWallet {
   type: string;
@@ -143,6 +154,7 @@ export default function WalletBridge() {
         appearance: { theme: "dark", accentColor: "#e5383b", walletChainType: "solana-only" },
         embeddedWallets: { solana: { createOnLogin: "all-users" } },
         externalWallets: { solana: { connectors } },
+        solana: { rpcs: solanaRpcs },
       }}
     >
       <Bridge />

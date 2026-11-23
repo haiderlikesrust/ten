@@ -67,3 +67,117 @@ The design is source-neutral: any new platform plugs into the same three pieces.
 Nothing here can buy anywhere but Collector Crypt. Prices elsewhere link out to that platform.
 
 **Adding a source:** add it to `SOURCES` in core, write a `CardSource` that returns `SourceQuote`s built with `cardKey`/`certKey`, and add it to `sourcesFromEnv`. Nothing else changes.
+
+---
+
+# Phase 2 (design only): buy an eBay listing with USDC
+
+> **Status: designed, not built.** Building starts only once the read-only eBay prices work on tenner.trade: `EBAY_CLIENT_ID` and `EBAY_CLIENT_SECRET` set on tenner-worker, real eBay asks showing on Scanner and Market, and the open questions at the end answered. Nothing below exists in code yet.
+
+The flow the user chose:
+
+1. A trader pays USDC on Tenner for an eBay listing.
+2. Tenner tops up a **Solcard**, a crypto debit card loaded with USDC on Solana.
+3. An admin buys the listing on eBay with that card, shipped to a vault.
+4. Once the slab is vaulted and tokenized, the token goes to the trader.
+
+No eBay buying is automated: eBay's Buy Order API needs eBay's approval, so an admin does every eBay step by hand from a queue.
+
+## The quote: full cost, locked
+
+`POST /ebay/quote { itemId }` makes one fresh eBay `getItem` call. That confirms the listing is live, buy-it-now and graded, and gives the current price and shipping to the vault. It then returns a quote with every part shown:
+
+| Line | Where it comes from |
+|---|---|
+| Item | eBay `getItem` price (USD only) |
+| Shipping to the vault | eBay `getItem` shipping to the vault's ZIP code |
+| Sales tax | The vault state's rate (setting `ebayBuy.taxBps`), since eBay charges tax at checkout by ship-to address |
+| Card / FX fee | `ebayBuy.cardFeeBps` of item + shipping + tax, the Solcard's top-up and spend fee |
+| Vault fee | `ebayBuy.vaultFee`, a flat intake and tokenization fee |
+| Tenner margin | `ebayBuy.marginBps` of the item |
+| **Total** | Everything above, in USDC micros |
+
+- The quote is stored in `ebay_quotes` (user, item, breakdown, total, `expires_at`) and is good for **3 minutes** (`ebayBuy.quoteTtlSec`).
+- Ordering after it expires needs a new quote.
+- Limits: `ebayBuy.maxOrder` (start at $500), a daily cap, and `ebayBuy.enabled`, which is off by default.
+- The $250 rule: eBay's Authenticity Guarantee sends trading cards sold for $250 or more to an authenticator before they ship, which adds days. The quote says so.
+
+`cardCost` = item + shipping + tax + card fee. This is exactly what has to reach the Solcard. The vault fee and margin never leave Tenner.
+
+## Money: escrow first, card second
+
+The user's USDC lives in their trading wallet and is booked as `user:<id>`. Three new book accounts all sit in the **Drops wallet**, next to `gifts` and `buyback_inflight`, and are added to `DROPS_WALLET_ACCOUNTS` so reconciliation still balances. A fourth account, `solcard`, is money on the card, off chain.
+
+| Account | Holds |
+|---|---|
+| `ebay_escrow` | Paid orders not yet sent to the card |
+| `ebay_inflight` | A card top-up signed or sent but not yet confirmed |
+| `ebay_reserve` | An admin-funded float that pays refunds once money is already on the card (booked like the Drops float, through Admin → Treasury transfers) |
+| `solcard` | Tenner's USDC on the Solcard: topped up and not yet spent. Off chain, so reconcile skips it; Admin shows it so an admin can compare it with the card's own balance. |
+
+Every step below is one `post()` with a ref like `ebay:<orderId>:<step>`, so a retried step never moves money twice. Every chain transfer goes through `sendOnce`, which means the treasury signing path, the kill switch and the mainnet arm (`Paused`) all apply.
+
+| Step | Chain | Book legs |
+|---|---|---|
+| **Pay** | `usdc` trading wallet → Drops wallet, memo `tenner:ebay:<id>` | `user:<id>` −total, `ebay_escrow` +total |
+| **Fund card** (admin presses Start) | `usdc` Drops wallet → `SOLCARD_DEPOSIT_ADDRESS` | First `ebay_escrow` −cardCost, `ebay_inflight` +cardCost; on confirm `ebay_inflight` −cardCost, `solcard` +cardCost |
+| **Bought** | none (card spend) | `solcard` −cardCost, `world` +cardCost |
+| **Delivered** | `core` vault → trader's trading wallet | `ebay_escrow` −(vault fee + margin), `revenue` +margin, `world` +vault fee (or `ebay_vault_fees` until CC bills it) |
+| **Refund before funding** (sold first, admin cancels, quote broken) | `usdc` Drops wallet → trading wallet | `ebay_escrow` −total, `user:<id>` +total |
+| **Refund after funding** (eBay buy failed, seller cancelled) | `usdc` Drops wallet → trading wallet | `ebay_escrow` −(total − cardCost), `ebay_reserve` −cardCost, `user:<id>` +total |
+
+**Money left on the card.** After a refund that came after funding, the cardCost stays on the Solcard as float, which can't usually be withdrawn back to crypto. The next order spends that float before topping up again:
+- Book legs: `ebay_escrow` −x, `ebay_reserve` +x.
+- When that purchase happens: `solcard` −x, `world` +x.
+- Nothing moves on chain.
+
+That pays the reserve back. If `ebay_reserve` is too small for a refund after funding, the order waits as **Refund pending**, with an admin alert, instead of borrowing from the Pulse pool.
+
+Before an admin presses Start, the saga re-reads the listing with `getItem`:
+- If it has ended, it refunds.
+- If the price plus shipping is higher than quoted, it refunds; Tenner never absorbs a rise silently.
+- Only the exact cardCost goes to the card, never the whole escrow.
+
+## Order states
+
+Table `ebay_orders`:
+- user, quote, item id and URL, breakdown, total, cardCost, state
+- eBay order number, carrier and tracking, NFT address, chain signatures, error, timestamps, `next_run_at`/`lease_until`
+
+It is a resumable saga like `orders` and `buybacks`: each tick picks up where the last one stopped.
+
+```
+Paid ──Start──► Funding card ──confirmed──► (waiting for the admin's eBay buy)
+                    │                               │
+                    ▼                               ▼ admin enters eBay order no.
+                 Refunded ◄──────────────────── Bought ──admin enters tracking──► Shipped
+                    ▲                               │                               │
+                    └──── Failed (needs an admin) ◄─┴── vault rejects / lost ◄──────┤
+                                                                                    ▼ admin enters NFT address
+                                                              Delivered ◄── core transfer ◄── Vaulted
+```
+
+- **Paid:** the trader's transfer confirmed, and the money is in `ebay_escrow`.
+- **Funding card:** set by Start. The top-up is in flight, then confirmed. The admin then buys on eBay with the card.
+- **Bought:** the admin enters the eBay order number. Can't be undone from Tenner; after this point, refunds go through eBay's own process.
+- **Shipped:** the admin enters the carrier and tracking number.
+- **Vaulted:** the admin enters the NFT address once the vault has tokenized the slab into Tenner's vault wallet. The saga checks on chain that the vault wallet holds that NFT.
+- **Delivered:** the `core` transfer to the trader's trading wallet confirmed. A `holdings` row is added, and Portfolio shows the card.
+- **Refunded / Failed:** Refunded pays back as in the table above. Failed means something needs a person (a lost parcel, a slab the vault rejected); every Failed order needs an admin's decision to Refund or Retry.
+
+**Admin queue** (`/admin/ebay`): one row per order, with the next action button only. The buttons are Start, Mark bought, Mark shipped, Mark vaulted, Refund and Fail, and each is recorded with who pressed it. Admin also shows the `solcard` and `ebay_reserve` balances.
+
+## Configuration
+
+- **`SOLCARD_DEPOSIT_ADDRESS`** (tenner-worker only, never in the repo): the Solcard's Solana deposit address, which the user will provide.
+  - The worker refuses to start eBay orders when it is unset or not a valid address.
+  - USDC goes to that address's USDC token account, as with any `usdc` op to `{ kind: "address" }`.
+- Settings under `ebayBuy` (Admin): `enabled`, `taxBps`, `cardFeeBps`, `vaultFee`, `marginBps`, `quoteTtlSec`, `maxOrder`, `dailyCap`, and the vault's ship-to ZIP code.
+- Paper mode: the Solcard is a paper address, and admins press the same buttons with made-up order numbers, so the whole flow can be tested end to end without money.
+
+## Open questions for the user
+
+1. **Solcard terms:** does it allow commercial or reseller use (buying goods for other people)? What are its per-purchase, daily and monthly spend limits, its top-up and FX fees, and can a balance ever be withdrawn back to USDC? The spend limits cap `ebayBuy.maxOrder`.
+2. **The vault:** does Collector Crypt accept slabs shipped straight from third-party eBay sellers to its intake, under Tenner's account? What does intake and tokenization cost, how long does it take, and what happens to a slab whose cert doesn't match the listing? If CC won't accept direct shipments, slabs go to an admin's address first, which needs a new step and changes the risk.
+3. **Legal review:** taking crypto from users to buy goods for them on another marketplace may make Tenner a money transmitter, or an agent or reseller with sales-tax duties. It also raises consumer-protection questions: returns, items not as described, and who carries the loss on a parcel lost in transit. Get counsel's advice before this runs with real money, as with gift draws (docs/FLYWHEEL.md).
+4. **eBay's rules:** check that buying as a regular eBay buyer on other people's behalf is allowed under eBay's User Agreement. Also check whether showing an "order through Tenner" button next to eBay data fits the API License Agreement.

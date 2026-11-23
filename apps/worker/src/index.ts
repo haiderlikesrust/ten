@@ -1,6 +1,7 @@
 import { DEFAULT_DROP_SETTINGS, ladderMachines, usd } from "@gemdex/core";
 import { balanceOf, connect, getSetting, loadJson, post, runMigrations, saveJson, setSetting, sql, type Database } from "@gemdex/db";
-import { CcRead, createPaperVenue, type PaperVenue } from "@gemdex/venues";
+import { CcRead, createPaperVenue, sourcesFromEnv, type PaperVenue } from "@gemdex/venues";
+import { backfillListingKeys, pruneQuotes, tickSources } from "./sources";
 import { tickBalances } from "./balances";
 import { tickCashback, tickHolderSnapshots } from "./cashback";
 import type { Ctx } from "./ctx";
@@ -152,6 +153,13 @@ async function main() {
   every(15_000, "listings", () => ingestListings(ctx));
   every(30_000, "sales", () => detectSales(ctx));
   every(3_600_000, "price points", () => recordPricePoints(ctx));
+  // Prices for the same cards on other platforms (docs/SOURCES.md), for each source this deployment has a key for.
+  const sources = sourcesFromEnv(process.env);
+  if (sources.length > 0) {
+    log(`reading prices from ${sources.map((s) => s.id).join(", ")}`);
+    every(30_000, "sources", () => tickSources(ctx, sources));
+  }
+  every(3_600_000, "quote prune", () => pruneQuotes(ctx));
   // Off the minute on purpose, so it never lines up with the jobs that move money.
   every(venue.mode === "paper" ? 127_000 : 307_000, "reconcile", () => reconcile(ctx));
   every(4 * 3_600_000, "holder snapshots", () => tickHolderSnapshots(ctx));
@@ -168,6 +176,7 @@ async function main() {
   void (async () => {
     const added = await ingestListings(ctx, { pages: 5, announce: false }).catch(() => 0);
     log(`backfilled ${added} listings`);
+    log(`gave ${await backfillListingKeys(ctx).catch(() => 0)} listings matching keys`);
     const codes = ladderMachines((await getSetting(ctx.db, "drops")).ladder);
     if (venue.mode === "paper") {
       await ingestPool(ctx, [...new Set([...codes, ...ladderMachines(DEFAULT_DROP_SETTINGS.ladder)])]);

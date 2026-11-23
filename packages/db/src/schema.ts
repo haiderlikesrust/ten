@@ -254,7 +254,11 @@ export const listings = pgTable("listings", {
   firstSeen: ts("first_seen").notNull().defaultNow(),
   lastSeen: ts("last_seen").notNull().defaultNow(),
   active: boolean("active").notNull().default(true),
+  /** Matching keys for prices on other platforms (docs/SOURCES.md), from @gemdex/core. */
+  certKey: text("cert_key"),
+  cardKey: text("card_key"),
 }, (t) => [
+  index("listings_card_key_idx").on(t.cardKey),
   index("listings_active_idx").on(t.active, t.listedAt),
   index("listings_price_idx").on(t.active, t.price),
   index("listings_seller_idx").on(t.seller),
@@ -279,6 +283,43 @@ export const pricePoints = pgTable("price_points", {
   ask: micros("ask"),
   insuredValue: micros("insured_value"),
 }, (t) => [primaryKey({ columns: [t.nft, t.at] })]);
+
+/**
+ * Prices for the same cards on other platforms (docs/SOURCES.md), read-only: Tenner never buys there. Matched to
+ * Collector Crypt listings by cert_key (the same slab) or card_key (the same card in the same grade), both
+ * computed by @gemdex/core so every source agrees.
+ */
+export const sourceQuotes = pgTable("source_quotes", {
+  /** `${source}:${the source's own id}`. */
+  id: text("id").primaryKey(),
+  source: text("source").notNull(),
+  kind: text("kind").$type<"ask" | "sold">().notNull(),
+  title: text("title").notNull(),
+  url: text("url"),
+  image: text("image"),
+  grader: text("grader"),
+  gradeNum: doublePrecision("grade_num"),
+  certKey: text("cert_key"),
+  cardKey: text("card_key"),
+  price: micros("price").notNull(),
+  shipping: micros("shipping"),
+  /** When it was listed, or when it sold. */
+  at: ts("at"),
+  seenAt: ts("seen_at").notNull().defaultNow(),
+  active: boolean("active").notNull().default(true),
+}, (t) => [
+  index("source_quotes_cert_idx").on(t.certKey),
+  index("source_quotes_card_idx").on(t.cardKey, t.active),
+  index("source_quotes_seen_idx").on(t.source, t.seenAt),
+]);
+
+/** When each source was last asked about a card, so lookups spread across cards and stay inside its rate limit. */
+export const sourceLookups = pgTable("source_lookups", {
+  source: text("source").notNull(),
+  cardKey: text("card_key").notNull(),
+  lookedAt: ts("looked_at").notNull().defaultNow(),
+  found: integer("found").notNull().default(0),
+}, (t) => [primaryKey({ columns: [t.source, t.cardKey] })]);
 
 export const machines = pgTable("machines", {
   code: text("code").primaryKey(),

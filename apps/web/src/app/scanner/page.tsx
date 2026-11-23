@@ -5,6 +5,8 @@ import Link from "next/link";
 import { useMemo, useState } from "react";
 import { CardThumb, Empty, Grade, Pill, Rarity, SectionTitle, Segmented, Skeleton, inputClass } from "@/components/bits";
 import { BuySizeControl, QuickBuy } from "@/components/BuySize";
+import { ElsewhereCell, bestElsewhere } from "@/components/Elsewhere";
+import { gapPct } from "@gemdex/core";
 import { ago, cardTitle, clock, compactUsd, money, packLabel } from "@/lib/format";
 import { useBuySize, type BuySize } from "@/lib/buySize";
 import { useLive } from "@/lib/live";
@@ -49,7 +51,7 @@ function DealTile({ listing }: { listing: Listing }) {
 /** Rows grow with the Buy button, so the card keeps up with it. */
 const TAPE_THUMB: Record<BuySize, number> = { s: 24, m: 24, l: 40 };
 
-const TAPE = "grid-cols-[minmax(0,1fr)_auto] md:grid-cols-[40px_minmax(0,1fr)_70px_84px_84px_64px_auto]";
+const TAPE = "grid-cols-[minmax(0,1fr)_auto] md:grid-cols-[40px_minmax(0,1fr)_70px_84px_84px_64px_118px_auto]";
 
 function TapeRow({ listing }: { listing: Listing }) {
   const now = useNow();
@@ -74,6 +76,7 @@ function TapeRow({ listing }: { listing: Listing }) {
       <span className="num hidden text-right text-[13px] font-medium md:block">{money(listing.price, true)}</span>
       <span className="num hidden text-right text-[13px] text-faint md:block">{money(listing.insuredValue, true)}</span>
       <div className="hidden text-right md:block"><Discount pct={listing.discountPct} /></div>
+      <div className="hidden min-w-0 text-right md:block"><ElsewhereCell listing={listing} /></div>
       <QuickBuy listing={listing} />
     </li>
   );
@@ -109,32 +112,35 @@ function PullLine({ pull }: { pull: Pull }) {
 export default function ScannerPage() {
   const fresh = useLive((s) => s.fresh);
   const below = useLive((s) => s.below);
+  const under = useLive((s) => s.under);
   const pulls = useLive((s) => s.pulls);
   const loaded = useLive((s) => s.loaded);
-  const [view, setView] = useState<"new" | "below">("new");
+  const [view, setView] = useState<"new" | "below" | "under">("new");
   const [search, setSearch] = useState("");
   // Loading only until the first load lands. After that an empty feed is a quiet market, not a wait.
   const loading = !loaded && fresh.length === 0;
 
   const tape = useMemo(() => {
     const q = search.trim().toLowerCase();
-    const rows = view === "new" ? fresh : below;
+    const rows = view === "new" ? fresh : view === "below" ? below : under;
     return q ? rows.filter((listing) => listing.name.toLowerCase().includes(q)) : rows;
-  }, [below, fresh, search, view]);
+  }, [below, fresh, search, under, view]);
 
   const bestDiscount = below.reduce((best, listing) => Math.max(best, listing.discountPct ?? 0), 0);
   const topPull = pulls.reduce((top, pull) => Math.max(top, pull.insuredValue ?? 0), 0);
   const listed = fresh.reduce((sum, listing) => sum + listing.price, 0);
+  const bestGap = under.reduce((best, listing) => Math.max(best, gapPct(listing.price, bestElsewhere(listing)?.ask ?? null) ?? 0), 0);
 
   return (
     <div className="h-full overflow-y-auto xl:overflow-hidden">
       <div className="flex min-h-full flex-col gap-2 px-2 pb-2 pt-0.5 sm:px-3 xl:h-full">
         <h1 className="sr-only">Scanner</h1>
 
-        <section aria-label="Market readings" className="slab grid shrink-0 grid-cols-2 divide-line sm:grid-cols-4 sm:divide-x">
+        <section aria-label="Market readings" className="slab grid shrink-0 grid-cols-2 divide-line sm:grid-cols-5 sm:divide-x">
           <Reading label="New listings in feed" value={String(fresh.length)} />
           <Reading label="Value listed in feed" value={compactUsd(listed / 1e6)} />
           <Reading label="Best discount to insured" value={bestDiscount > 0 ? `-${bestDiscount}%` : "–"} tone={bestDiscount > 0 ? "text-teal" : undefined} />
+          <Reading label="Best gap vs other markets" value={bestGap > 0 ? `-${bestGap}%` : "–"} tone={bestGap > 0 ? "text-teal" : undefined} />
           <Reading label="Top recent pull" value={topPull > 0 ? money(topPull, true) : "–"} tone="text-gold" />
         </section>
 
@@ -152,7 +158,7 @@ export default function ScannerPage() {
         <div className="grid min-h-0 flex-1 grid-cols-1 gap-2 xl:grid-cols-[minmax(0,1fr)_340px]">
           <section aria-label="Live listings" className="slab flex min-h-[420px] min-w-0 flex-col xl:min-h-0">
             <div className="flex shrink-0 flex-wrap items-center gap-2 border-b border-line p-1.5">
-              <Segmented label="Listings" value={view} onChange={setView} options={[{ value: "new", label: "New listings" }, { value: "below", label: "Below insured" }]} />
+              <Segmented label="Listings" value={view} onChange={setView} options={[{ value: "new", label: "New listings" }, { value: "below", label: "Below insured" }, { value: "under", label: "Under other markets" }]} />
               <div className="relative min-w-[96px] flex-1 sm:max-w-[240px]">
                 <Search size={15} className="pointer-events-none absolute z-10 left-2.5 top-1/2 -translate-y-1/2 text-faint" aria-hidden="true" />
                 <input className={`${inputClass} !h-9 pl-8`} placeholder="Filter by name" aria-label="Filter listings by name" value={search} onChange={(e) => setSearch(e.target.value)} />
@@ -160,10 +166,10 @@ export default function ScannerPage() {
               <div className="ml-auto"><BuySizeControl /></div>
             </div>
             <div className={`hidden shrink-0 gap-x-3 px-3.5 py-1.5 text-[12px] font-medium text-faint md:grid ${TAPE}`}>
-              <span>Age</span><span>Card</span><span>Grade</span><span className="text-right">Price</span><span className="text-right">Insured</span><span className="text-right">vs insured</span><span className="min-w-[76px]" />
+              <span>Age</span><span>Card</span><span>Grade</span><span className="text-right">Price</span><span className="text-right">Insured</span><span className="text-right">vs insured</span><span className="text-right" title="Cheapest buy-it-now for the same card and grade on another platform, shipping included. Read-only.">Elsewhere</span><span className="min-w-[76px]" />
             </div>
             <div className="min-h-0 flex-1 overflow-y-auto">
-              {loading ? <Skeleton /> : tape.length === 0 ? <Empty title={search.trim() ? "No listings match" : view === "below" ? "Nothing below insured value right now" : "No new listings right now"} /> : <ul>{tape.map((listing) => <TapeRow key={listing.nft} listing={listing} />)}</ul>}
+              {loading ? <Skeleton /> : tape.length === 0 ? <Empty title={search.trim() ? "No listings match" : view === "below" ? "Nothing below insured value right now" : view === "under" ? "Nothing cheaper here than on other markets right now" : "No new listings right now"} /> : <ul>{tape.map((listing) => <TapeRow key={listing.nft} listing={listing} />)}</ul>}
             </div>
           </section>
 

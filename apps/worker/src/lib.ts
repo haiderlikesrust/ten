@@ -6,5 +6,6 @@ export * from "./cashback";
 export * from "./fees";
 export * from "./reconcile";
 export * from "./ingest";
+export * from "./sources";
 export * from "./balances";
 export * from "./pulse";

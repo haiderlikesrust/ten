@@ -30,6 +30,8 @@ interface LiveState {
   seq: number | null;
   fresh: Listing[];
   below: Listing[];
+  /** Cheaper on Collector Crypt than their cheapest ask on another platform. */
+  under: Listing[];
   pulls: Pull[];
   drops: Record<string, Drop>;
   recent: Drop[];
@@ -51,6 +53,7 @@ export const useLive = create<LiveState>((set, get) => ({
   seq: null,
   fresh: [],
   below: [],
+  under: [],
   pulls: [],
   drops: {},
   recent: [],
@@ -62,7 +65,7 @@ export const useLive = create<LiveState>((set, get) => ({
   hydrate: async () => {
     const turn = ++hydrateTurn;
     const [pulse, drops] = await Promise.all([
-      api<{ fresh: Listing[]; below: Listing[]; pulls: Pull[] }>("/pulse"),
+      api<{ fresh: Listing[]; below: Listing[]; under?: Listing[]; pulls: Pull[] }>("/pulse"),
       api<{ live: Drop[]; recent: Drop[]; status: DropsStatus | null; pools: { drops: number; cashback: number } }>("/drops"),
     ]);
     if (turn !== hydrateTurn) return;
@@ -70,6 +73,7 @@ export const useLive = create<LiveState>((set, get) => ({
       loaded: true,
       fresh: pulse.fresh,
       below: pulse.below,
+      under: pulse.under ?? [],
       pulls: pulse.pulls,
       drops: Object.fromEntries(drops.live.map((d) => [d.id, d])),
       recent: drops.recent,
@@ -95,7 +99,7 @@ export const useLive = create<LiveState>((set, get) => ({
     }
     if (topic === "listings" && type === "sold") {
       const nft = payload.nft as string;
-      set((s) => ({ fresh: s.fresh.filter((l) => l.nft !== nft), below: s.below.filter((l) => l.nft !== nft) }));
+      set((s) => ({ fresh: s.fresh.filter((l) => l.nft !== nft), below: s.below.filter((l) => l.nft !== nft), under: s.under.filter((l) => l.nft !== nft) }));
     }
     if (topic === "drops" && type === "drop") {
       const drop = payload.drop as Drop;

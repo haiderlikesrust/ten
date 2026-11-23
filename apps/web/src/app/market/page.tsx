@@ -7,6 +7,7 @@ import Link from "next/link";
 import { useEffect, useRef, useState, type CSSProperties } from "react";
 import { Button, CardThumb, Empty, Field, Grade, Pill, Segmented, Sheet, inputClass } from "@/components/bits";
 import { BuySizeControl, QuickBuy } from "@/components/BuySize";
+import { ElsewhereCell } from "@/components/Elsewhere";
 import { useBuySize, type BuySize } from "@/lib/buySize";
 import { api } from "@/lib/api";
 import { ago, cardTitle, money } from "@/lib/format";
@@ -24,10 +25,12 @@ interface Filters {
   maxPrice: string;
   minDiscount: string;
   source: string;
+  /** "cheaper": only cards cheaper here than their cheapest ask on another platform. */
+  elsewhere: string;
   sort: string;
 }
 
-const EMPTY: Filters = { search: "", category: "", grader: "", minGrade: "", minPrice: "", maxPrice: "", minDiscount: "", source: "", sort: "newest" };
+const EMPTY: Filters = { search: "", category: "", grader: "", minGrade: "", minPrice: "", maxPrice: "", minDiscount: "", source: "", elsewhere: "", sort: "newest" };
 const PRESET_KEY = "gemdex.presets";
 const SORTS = [
   { value: "newest", label: "Newest" },
@@ -35,6 +38,7 @@ const SORTS = [
   { value: "price_asc", label: "Cheapest" },
   { value: "price_desc", label: "Priciest" },
   { value: "value_desc", label: "Top value" },
+  { value: "gap", label: "Under other markets" },
 ];
 
 function loadPresets(): Array<{ name: string; filters: Filters }> {
@@ -68,7 +72,7 @@ const ROW_HEIGHT: Record<BuySize, number> = { s: 60, m: 60, l: 76 };
 const PHONE_ROW_HEIGHT = 76;
 const THUMB: Record<BuySize, number> = { s: 32, m: 32, l: 44 };
 
-const COLUMNS = "md:grid-cols-[var(--thumb)_minmax(0,1fr)_76px_52px_76px_76px_44px_auto] xl:grid-cols-[var(--thumb)_minmax(0,1.3fr)_minmax(0,1fr)_84px_60px_84px_84px_52px_124px]";
+const COLUMNS = "md:grid-cols-[var(--thumb)_minmax(0,1fr)_76px_52px_76px_76px_96px_44px_auto] xl:grid-cols-[var(--thumb)_minmax(0,1.3fr)_minmax(0,1fr)_84px_60px_84px_84px_118px_52px_124px]";
 
 function MarketRow({ listing }: { listing: Listing }) {
   const now = useNow();
@@ -96,6 +100,7 @@ function MarketRow({ listing }: { listing: Listing }) {
       <div className="hidden text-right md:block">
         {discount !== null && discount !== 0 ? <Pill tone={discount > 0 ? "good" : "bad"}>{discount > 0 ? "-" : "+"}{Math.abs(discount)}%</Pill> : <span className="text-faint">–</span>}
       </div>
+      <div className="hidden min-w-0 text-right md:block"><ElsewhereCell listing={listing} gapFromXl /></div>
       <div className="num hidden text-right text-[12.5px] text-faint md:block">{ago(listing.listedAt, now)}</div>
       <div className="flex justify-end"><QuickBuy listing={listing} /></div>
     </div>
@@ -152,6 +157,12 @@ export default function MarketPage() {
       <Field label="Min price"><input className={inputClass} inputMode="decimal" value={filters.minPrice} onChange={(e) => update("minPrice", e.target.value)} placeholder="$0" /></Field>
       <Field label="Max price"><input className={inputClass} inputMode="decimal" value={filters.maxPrice} onChange={(e) => update("maxPrice", e.target.value)} placeholder="$500" /></Field>
       <Field label="Min discount"><input className={inputClass} inputMode="decimal" value={filters.minDiscount} onChange={(e) => update("minDiscount", e.target.value)} placeholder="10%" /></Field>
+      <Field label="Other markets">
+        <select className={inputClass} value={filters.elsewhere} onChange={(e) => update("elsewhere", e.target.value)}>
+          <option value="">Any</option>
+          <option value="cheaper">Cheaper here</option>
+        </select>
+      </Field>
     </>
   );
 
@@ -177,6 +188,10 @@ export default function MarketPage() {
             <input aria-label="Min price" className={`${inputClass} !h-9 !w-[92px]`} inputMode="decimal" value={filters.minPrice} onChange={(e) => update("minPrice", e.target.value)} placeholder="Min $" />
             <input aria-label="Max price" className={`${inputClass} !h-9 !w-[92px]`} inputMode="decimal" value={filters.maxPrice} onChange={(e) => update("maxPrice", e.target.value)} placeholder="Max $" />
             <input aria-label="Min discount" className={`${inputClass} !h-9 !w-[112px]`} inputMode="decimal" value={filters.minDiscount} onChange={(e) => update("minDiscount", e.target.value)} placeholder="Min discount" />
+            <select aria-label="Other markets" title="Prices for the same card and grade on other platforms, read-only" className={`${inputClass} !h-9 !w-[150px]`} value={filters.elsewhere} onChange={(e) => update("elsewhere", e.target.value)}>
+              <option value="">Any vs elsewhere</option>
+              <option value="cheaper">Cheaper than elsewhere</option>
+            </select>
           </div>
           <Button className="h-9 xl:hidden" onClick={() => setSheet(true)}>
             <SlidersHorizontal size={15} aria-hidden="true" /> Filters{activeCount > 0 ? <span className="num rounded-[2px] bg-volt px-1.5 text-[12px] font-bold text-[var(--on-volt)]">{activeCount}</span> : null}
@@ -213,7 +228,7 @@ export default function MarketPage() {
 
       <section className="slab flex min-h-0 flex-1 flex-col p-1.5" aria-label="Listings" style={{ "--thumb": `${THUMB[buySize] + 6}px` } as CSSProperties}>
       <div className={`hidden h-7 shrink-0 items-center gap-x-3 px-2.5 text-[12px] font-medium text-faint md:grid ${COLUMNS}`}>
-        <span /><span>Card</span><span className="hidden xl:block">Set</span><span>Grade</span><span>Year</span><span className="text-right">Insured</span><span className="text-right">vs insured</span><span className="text-right">Age</span><span className="text-right">Buy</span>
+        <span /><span>Card</span><span className="hidden xl:block">Set</span><span>Grade</span><span>Year</span><span className="text-right">Insured</span><span className="text-right">vs insured</span><span className="text-right" title="Cheapest buy-it-now for the same card and grade on another platform, shipping included. Read-only.">Elsewhere</span><span className="text-right">Age</span><span className="text-right">Buy</span>
       </div>
 
       <div ref={parent} className="min-h-0 flex-1 overflow-y-auto">

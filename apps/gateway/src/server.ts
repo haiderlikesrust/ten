@@ -19,6 +19,7 @@ import { convertRoutes } from "./convert";
 import { flywheelRoutes } from "./flywheel";
 import { Realtime } from "./realtime";
 import { rpcRoutes } from "./rpc";
+import { cheapestElsewhere, withElsewhere } from "./elsewhere";
 
 export interface ServerOptions {
   database: Database;
@@ -171,6 +172,8 @@ const LISTING_SORTS = {
   price_desc: desc(listings.price),
   value_desc: desc(listings.insuredValue),
   discount: sql`(1 - ${listings.price}::float8 / nullif(${listings.insuredValue}, 0)) desc nulls last`,
+  // Cheapest here compared with the cheapest ask on another platform (docs/SOURCES.md).
+  gap: sql`(1 - ${listings.price}::float8 / nullif(${cheapestElsewhere}, 0)) desc nulls last`,
 } as const;
 
 function listingDto(row: typeof listings.$inferSelect) {
@@ -300,11 +303,13 @@ export async function buildServer(opts: ServerOptions) {
     if (year !== undefined && Number.isInteger(year) && year > 0 && year < 10_000) filters.push(eq(listings.year, year));
     const minDiscount = asNumber(q.minDiscount);
     if (minDiscount !== undefined) filters.push(sql`${listings.insuredValue} > 0 and (1 - ${listings.price}::float8 / ${listings.insuredValue}) * 100 >= ${minDiscount}`);
+    // Only cards that are cheaper here than anywhere else they are listed.
+    if (q.elsewhere === "cheaper") filters.push(sql`${listings.price} < ${cheapestElsewhere}`);
     const sort = LISTING_SORTS[(q.sort ?? "newest") as keyof typeof LISTING_SORTS] ?? LISTING_SORTS.newest;
     const limit = Math.max(0, Math.min(Math.floor(asNumber(q.limit) ?? 100), 500));
     const rows = await db.select().from(listings).where(and(...filters)).orderBy(sort).limit(limit).offset(Math.max(0, Math.min(Math.floor(asNumber(q.offset) ?? 0), 1_000_000)));
     const total = await db.select({ n: count() }).from(listings).where(and(...filters));
-    return { rows: rows.map(listingDto), total: total[0]?.n ?? 0 };
+    return { rows: await withElsewhere(raw, rows.map(listingDto)), total: total[0]?.n ?? 0 };
   });
 
   app.get("/listings/facets", async () => {
@@ -334,7 +339,17 @@ export async function buildServer(opts: ServerOptions) {
       .orderBy(LISTING_SORTS.discount)
       .limit(40);
     const recentPulls = await db.select().from(pulls).orderBy(desc(pulls.at)).limit(40);
-    return { fresh: fresh.map(listingDto), below: below.map(listingDto), pulls: recentPulls };
+    // Cards cheaper on Collector Crypt than their cheapest ask on another platform, biggest gap first.
+    const under = await db
+      .select()
+      .from(listings)
+      .where(and(eq(listings.active, true), sql`${listings.price} < ${cheapestElsewhere}`))
+      .orderBy(LISTING_SORTS.gap)
+      .limit(40);
+    return {
+      fresh: await withElsewhere(raw, fresh.map(listingDto)), below: await withElsewhere(raw, below.map(listingDto)),
+      under: await withElsewhere(raw, under.map(listingDto)), pulls: recentPulls,
+    };
   });
 
   app.get("/pulls", async (request) => {
@@ -391,7 +406,7 @@ export async function buildServer(opts: ServerOptions) {
       .orderBy(desc(drops.stoppedAt))
       .limit(20);
     return {
-      nft, listing: listing ? listingDto(listing) : null, detail, market, sales: salesRows, points, comps: comps.map(listingDto), pulse,
+      nft, listing: listing ? (await withElsewhere(raw, [listingDto(listing)]))[0] : null, detail, market, sales: salesRows, points, comps: comps.map(listingDto), pulse,
       gradeNum: parseGradeNumber(String(detail?.grade ?? listing?.grade ?? "")),
     };
   });

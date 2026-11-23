@@ -1,4 +1,6 @@
 import type { Access } from "@gemdex/core";
+import type { Elsewhere } from "@gemdex/core";
+
 export interface Listing {
   nft: string;
   name: string;
@@ -21,6 +23,8 @@ export interface Listing {
   firstSeen?: string;
   discountPct: number | null;
   active?: boolean;
+  /** The same card on other platforms (docs/SOURCES.md). Missing on a listing that just arrived live. */
+  elsewhere?: Elsewhere[];
 }
 
 export interface Pull {

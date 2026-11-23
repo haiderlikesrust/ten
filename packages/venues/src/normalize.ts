@@ -1,4 +1,4 @@
-import { parseGradeNumber, parseUsd, rarityFromTier, usd, type Micros, type Rarity } from "@gemdex/core";
+import { cardKey, ccIdentity, certKey, parseGradeNumber, parseUsd, rarityFromTier, usd, type Micros, type Rarity } from "@gemdex/core";
 import type { CcListingRow, CcMachine, CcPoolCard, CcStatus, CcWinner } from "./cc-read";
 
 export interface NormalListing {
@@ -20,6 +20,9 @@ export interface NormalListing {
   offers: number;
   vault: string | null;
   listedAt: Date | null;
+  /** Matching keys for prices elsewhere (docs/SOURCES.md). */
+  certKey: string | null;
+  cardKey: string | null;
 }
 
 /** Only USDC prices are dollars. Other marketplaces list in SOL, which a USDC wallet can't pay. */
@@ -28,6 +31,7 @@ export const isUsdcListing = (listing: { currency?: string } | null | undefined)
 export function normalizeListing(row: CcListingRow): NormalListing | null {
   if (!row.listing || !row.nftAddress || !isUsdcListing(row.listing)) return null;
   const listedAt = row.listing.createdAt ?? row.listedAt;
+  const gradeNum = parseGradeNumber(row.grade, row.gradeNum);
   return {
     nft: row.nftAddress,
     name: row.itemName,
@@ -36,7 +40,7 @@ export function normalizeListing(row: CcListingRow): NormalListing | null {
     year: row.year ?? null,
     grader: row.gradingCompany ?? null,
     grade: row.grade ?? null,
-    gradeNum: parseGradeNumber(row.grade, row.gradeNum),
+    gradeNum,
     cert: row.gradingID ?? null,
     image: row.images?.frontS ?? row.images?.frontM ?? row.frontImage ?? null,
     insuredValue: parseUsd(row.insuredValue),
@@ -47,6 +51,8 @@ export function normalizeListing(row: CcListingRow): NormalListing | null {
     offers: row.offers?.length ?? 0,
     vault: row.vault ?? null,
     listedAt: listedAt ? new Date(listedAt) : null,
+    certKey: certKey(row.gradingCompany, row.gradingID),
+    cardKey: cardKey(ccIdentity(row.itemName, row.gradingCompany, gradeNum)),
   };
 }
 

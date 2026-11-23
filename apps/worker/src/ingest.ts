@@ -30,11 +30,12 @@ async function upsertListing(ctx: Ctx, l: NormalListing): Promise<boolean> {
   const now = new Date().toISOString();
   const listedAt = l.listedAt?.toISOString() ?? null;
   const result = await ctx.sql<{ inserted: boolean; price_changed: boolean }[]>`
-    insert into listings (nft, name, category, "set", year, grader, grade, grade_num, cert, image, insured_value, price, source, seller, seller_name, offers, vault, listed_at, first_seen, last_seen, active)
-    values (${l.nft}, ${l.name}, ${l.category}, ${l.set}, ${l.year}, ${l.grader}, ${l.grade}, ${l.gradeNum}, ${l.cert}, ${l.image}, ${l.insuredValue}, ${l.price}, ${l.source}, ${l.seller}, ${l.sellerName}, ${l.offers}, ${l.vault}, ${listedAt}, ${now}, ${now}, true)
+    insert into listings (nft, name, category, "set", year, grader, grade, grade_num, cert, image, insured_value, price, source, seller, seller_name, offers, vault, listed_at, first_seen, last_seen, active, cert_key, card_key)
+    values (${l.nft}, ${l.name}, ${l.category}, ${l.set}, ${l.year}, ${l.grader}, ${l.grade}, ${l.gradeNum}, ${l.cert}, ${l.image}, ${l.insuredValue}, ${l.price}, ${l.source}, ${l.seller}, ${l.sellerName}, ${l.offers}, ${l.vault}, ${listedAt}, ${now}, ${now}, true, ${l.certKey}, ${l.cardKey})
     on conflict (nft) do update set
       price = excluded.price, insured_value = excluded.insured_value, source = excluded.source, seller = excluded.seller,
-      seller_name = excluded.seller_name, image = excluded.image, offers = excluded.offers, listed_at = excluded.listed_at, last_seen = excluded.last_seen, active = true
+      seller_name = excluded.seller_name, image = excluded.image, offers = excluded.offers, listed_at = excluded.listed_at, last_seen = excluded.last_seen, active = true,
+      cert_key = excluded.cert_key, card_key = excluded.card_key
     returning (xmax = 0) as inserted, false as price_changed`;
   return !!result[0]?.inserted;
 }

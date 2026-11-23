@@ -18,6 +18,7 @@ import { claimDrop } from "./claim";
 import { convertRoutes } from "./convert";
 import { flywheelRoutes } from "./flywheel";
 import { Realtime } from "./realtime";
+import { rpcRoutes } from "./rpc";
 
 export interface ServerOptions {
   database: Database;
@@ -932,6 +933,8 @@ export async function buildServer(opts: ServerOptions) {
   flywheelRoutes(app, { database, accessRefusal, tradingPaused });
   // SOL in a trading wallet, turned into USDC when the user asks.
   convertRoutes(app, { database, mode });
+  // The browser's Solana RPC, so no RPC key is ever built into the site.
+  rpcRoutes(app, { mode });
 
   return app;
 }

@@ -1,29 +1,28 @@
 "use client";
 
 import { PrivyProvider, usePrivy, useSigners } from "@privy-io/react-auth";
-import { toSolanaWalletConnectors, useExportWallet, useSignAndSendTransaction, useSignTransaction, useWallets } from "@privy-io/react-auth/solana";
+import { toSolanaWalletConnectors, useExportWallet, useSignTransaction, useWallets } from "@privy-io/react-auth/solana";
 import { createSolanaRpc, createSolanaRpcSubscriptions } from "@solana/kit";
 import { useQueryClient } from "@tanstack/react-query";
 import { useEffect, useRef } from "react";
 import { api, getToken, setToken } from "@/lib/api";
 import { connectStream } from "@/lib/live";
 import { loadMe } from "@/lib/session";
+import { RPC_URL, RPC_WS_URL, USDC_MINT, friendlySolanaError, sendAndConfirm, solanaConnection } from "@/lib/solana";
 import { useUi } from "@/lib/ui";
 
 const APP_ID = process.env.NEXT_PUBLIC_PRIVY_APP_ID!;
 const SIGNER_ID = process.env.NEXT_PUBLIC_PRIVY_SIGNER_ID ?? "";
-const USDC_MINT = process.env.NEXT_PUBLIC_USDC_MINT || "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v";
-const RPC_URL = process.env.NEXT_PUBLIC_SOLANA_RPC || "https://api.mainnet-beta.solana.com";
 
 const connectors = toSolanaWalletConnectors();
 
-// Privy sends transactions itself (withdrawals) through this RPC. Without it, signAndSendTransaction throws
-// "No RPC configuration found for chain solana:mainnet" and the page crashes. Privy's hooks default to
-// solana:mainnet, so the site's RPC is registered under that name whatever network it points at.
+// Privy's wallet screens need an RPC per chain, or they throw "No RPC configuration found for chain solana:mainnet".
+// It points at the gateway's /rpc route, so no RPC key is built into the site. Privy's hooks default to
+// solana:mainnet, so the RPC is registered under that name whatever network the server is on.
 const solanaRpcs = {
   "solana:mainnet": {
     rpc: createSolanaRpc(RPC_URL),
-    rpcSubscriptions: createSolanaRpcSubscriptions(RPC_URL.replace(/^http/, "ws")),
+    rpcSubscriptions: createSolanaRpcSubscriptions(RPC_WS_URL),
   },
 };
 
@@ -40,7 +39,6 @@ function Bridge() {
   const { addSigners } = useSigners();
   const { exportWallet } = useExportWallet();
   const { ready: walletsReady, wallets } = useWallets();
-  const { signAndSendTransaction } = useSignAndSendTransaction();
   const { signTransaction } = useSignTransaction();
   const client = useQueryClient();
   const toast = useUi((s) => s.toast);
@@ -105,11 +103,18 @@ function Bridge() {
         },
         withdraw: async (to, amount) => {
           const wallet = wallets.find((w) => w.address === embedded?.address);
-          if (!wallet) throw new Error("Trading wallet is not ready");
-          // Built here and approved by the user, so this path never touches the server.
+          if (!wallet) throw new Error("Your trading wallet is still loading. Try again in a moment.");
+          // Built here and signed by the user. The server only relays the signed bytes: it can't change them.
+          // Privy's own send (signAndSendTransaction) crashed the page, so this signs with Privy and sends itself.
           const { buildWithdraw } = await import("@/lib/withdraw");
-          const bytes = await buildWithdraw({ from: wallet.address, to, amount, usdcMint: USDC_MINT, rpcUrl: RPC_URL });
-          await signAndSendTransaction({ transaction: bytes, wallet });
+          const bytes = await buildWithdraw({ from: wallet.address, to, amount, usdcMint: USDC_MINT }, solanaConnection());
+          let signed: Uint8Array;
+          try {
+            ({ signedTransaction: signed } = await signTransaction({ transaction: bytes, wallet }));
+          } catch (error) {
+            throw new Error(friendlySolanaError(error));
+          }
+          return sendAndConfirm(signed);
         },
         // SOL above the fee reserve, swapped to USDC in the trading wallet. Jupiter builds the swap by way of our
         // server, this browser checks it does what it says, and only then does the user approve it.
@@ -126,7 +131,7 @@ function Bridge() {
       },
     });
     return () => useUi.setState({ wallet: null });
-  }, [authenticated, embedded?.address, exportWallet, login, logout, signAndSendTransaction, signTransaction, wallets]);
+  }, [authenticated, embedded?.address, exportWallet, login, logout, signTransaction, wallets]);
 
   useEffect(() => {
     finish.current();

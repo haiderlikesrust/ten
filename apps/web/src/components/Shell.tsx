@@ -19,10 +19,20 @@ import { PixelIcon, type PixelName } from "./pixel";
 import { CommandPalette, ConnectModal, RevealModal, Toasts } from "./overlays";
 import { Tour } from "./Tour";
 import { AccessBanner } from "./AccessBanner";
+import { ErrorBoundary } from "./ErrorBoundary";
 import { GiftBanner } from "./GiftBanner";
 
 /** Only loaded when real sign-in is configured, so paper mode never ships wallet code. */
 const WalletBridge = process.env.NEXT_PUBLIC_PRIVY_APP_ID ? dynamic(() => import("./WalletBridge"), { ssr: false }) : () => null;
+
+/** A wallet popup that crashes is reported and reloaded, and the rest of the site keeps running. */
+function reportWalletCrash(error: Error) {
+  useUi.getState().toast({
+    tone: "bad",
+    title: "The wallet window hit an error",
+    detail: `Nothing was sent. Try again, or reload the page if it keeps happening. (${error.message.slice(0, 140)})`,
+  });
+}
 
 interface NavItem {
   href: string;
@@ -471,7 +481,9 @@ export function Shell({ children }: { children: ReactNode }) {
 
       {moreOpen ? <MoreSheet onClose={() => setMoreOpen(false)} /> : null}
       <Hotkeys />
-      <WalletBridge />
+      <ErrorBoundary onError={reportWalletCrash} retries={3}>
+        <WalletBridge />
+      </ErrorBoundary>
       <Toasts />
       <RevealModal />
       <ConnectModal />

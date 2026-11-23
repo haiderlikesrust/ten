@@ -106,6 +106,7 @@ export default function WalletPage() {
   const [forward, setForward] = useState(false);
   const [withdrawTo, setWithdrawTo] = useState("");
   const [withdrawAmount, setWithdrawAmount] = useState("");
+  const [withdrawing, setWithdrawing] = useState(false);
   const wallet = useUi((s) => s.wallet);
 
   useEffect(() => {
@@ -216,12 +217,34 @@ export default function WalletPage() {
                       toast({ tone: "bad", title: "More than you have available", detail: `You can withdraw up to ${money(me.available)}. The rest is on hold for buys that are settling.` });
                       return;
                     }
-                    void wallet?.withdraw(withdrawTo.trim(), Number(withdrawAmount)).then(() => toast({ tone: "ok", title: "Withdrawal sent" })).catch((error: Error) => toast({ tone: "bad", title: "Withdrawal failed", detail: error.message }));
+                    if (!wallet) {
+                      toast({ tone: "bad", title: "Your trading wallet is still loading", detail: "Wait a moment, or connect again, then retry." });
+                      return;
+                    }
+                    // An empty box sends to the wallet shown as its placeholder: the one you signed in with.
+                    const to = withdrawTo.trim() || me.connectedWallet;
+                    setWithdrawing(true);
+                    wallet
+                      .withdraw(to, Number(withdrawAmount))
+                      .then((signature) => {
+                        toast({ tone: "ok", title: `Sent ${money(Math.round(Number(withdrawAmount) * 1e6))}`, detail: `To ${to.slice(0, 4)}…${to.slice(-4)}. Signature ${signature.slice(0, 8)}…` });
+                        setWithdrawAmount("");
+                        void client.invalidateQueries({ queryKey: ["me"] });
+                        void client.invalidateQueries({ queryKey: ["activity"] });
+                      })
+                      .catch((error: Error) =>
+                        // Sent but not yet confirmed (see lib/solana): it may still land, so it isn't called a failure.
+                        toast(error.name === "UnconfirmedError"
+                          ? { tone: "info", title: "Withdrawal sent, not confirmed yet", detail: error.message }
+                          : { tone: "bad", title: "Withdrawal failed", detail: error.message }),
+                      )
+                      .finally(() => setWithdrawing(false));
                   }}
                 >
-                  <Field label="To address"><input className={inputClass} value={withdrawTo} onChange={(e) => setWithdrawTo(e.target.value)} placeholder={me.connectedWallet} /></Field>
+                  <Field label="To address"><input className={inputClass} value={withdrawTo} onChange={(e) => setWithdrawTo(e.target.value)} placeholder={me.connectedWallet} spellCheck={false} autoComplete="off" /></Field>
+                  <p className="-mt-1 text-[12px] text-faint">Leave empty to send to the wallet you signed in with.</p>
                   <Field label="Amount (USDC)"><input className={inputClass} inputMode="decimal" value={withdrawAmount} onChange={(e) => setWithdrawAmount(e.target.value)} /></Field>
-                  <Button type="submit" disabled={!wallet || !withdrawTo || !(Number(withdrawAmount) > 0)}>Withdraw</Button>
+                  <Button type="submit" disabled={withdrawing || !(Number(withdrawAmount) > 0)}>{withdrawing ? "Withdrawing…" : "Withdraw"}</Button>
                   <p className="text-[12.5px] text-faint">You approve this yourself. The server can never send your funds anywhere. Your trading wallet pays the network fee, so it needs a little SOL (about 0.003).</p>
                 </form>
               </section>

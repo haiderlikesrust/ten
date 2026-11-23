@@ -5,11 +5,24 @@ import { Connection, PublicKey, Transaction } from "@solana/web3.js";
 const solUp = (lamports: number): string => (Math.ceil(lamports / 1e6) / 1e3).toFixed(3);
 
 /** Builds a USDC withdrawal in the browser. It is only ever signed by the user. */
-export async function buildWithdraw(input: { from: string; to: string; amount: number; usdcMint: string; rpcUrl: string }): Promise<Uint8Array> {
+export async function buildWithdraw(
+  input: { from: string; to: string; amount: number; usdcMint: string },
+  connection: Pick<Connection, "getLatestBlockhash" | "getBalance" | "getAccountInfo" | "getMinimumBalanceForRentExemption">,
+): Promise<Uint8Array> {
+  let to: PublicKey;
+  try {
+    to = new PublicKey(input.to);
+  } catch {
+    throw new Error("That isn't a valid Solana address. Check it and try again.");
+  }
+  if (!PublicKey.isOnCurve(to.toBytes())) {
+    // Sending to a program-derived address would strand the USDC where nobody can sign for it.
+    throw new Error("That address can't receive USDC directly. Send to a normal wallet address, like the one in Phantom.");
+  }
+  if (!(input.amount > 0) || !Number.isFinite(input.amount)) throw new Error("Enter an amount above zero.");
   const from = new PublicKey(input.from);
-  const to = new PublicKey(input.to);
+  if (to.equals(from)) throw new Error("That's your trading wallet itself. Send to another wallet, like the one you signed in with.");
   const mint = new PublicKey(input.usdcMint);
-  const connection = new Connection(input.rpcUrl, "confirmed");
   const source = getAssociatedTokenAddressSync(mint, from);
   const destination = getAssociatedTokenAddressSync(mint, to);
   const [{ blockhash }, lamports, receiver, rent, keep] = await Promise.all([

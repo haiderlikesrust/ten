@@ -21,7 +21,6 @@ FROM deps AS web-build
 ARG NEXT_PUBLIC_GATEWAY_URL
 ARG NEXT_PUBLIC_PRIVY_APP_ID
 ARG NEXT_PUBLIC_PRIVY_SIGNER_ID
-ARG NEXT_PUBLIC_SOLANA_RPC
 ARG NEXT_PUBLIC_USDC_MINT
 # A new id per build: a browser still on the previous build reloads on its next navigation instead of
 # mixing old and new code. Pass the commit as DEPLOYMENT_ID if you like; the build time is the fallback.
@@ -29,7 +28,6 @@ ARG DEPLOYMENT_ID
 ENV NEXT_PUBLIC_GATEWAY_URL=$NEXT_PUBLIC_GATEWAY_URL \
     NEXT_PUBLIC_PRIVY_APP_ID=$NEXT_PUBLIC_PRIVY_APP_ID \
     NEXT_PUBLIC_PRIVY_SIGNER_ID=$NEXT_PUBLIC_PRIVY_SIGNER_ID \
-    NEXT_PUBLIC_SOLANA_RPC=$NEXT_PUBLIC_SOLANA_RPC \
     NEXT_PUBLIC_USDC_MINT=$NEXT_PUBLIC_USDC_MINT
 WORKDIR /app/apps/web
 RUN id="${DEPLOYMENT_ID:-$(date +%s)}" \

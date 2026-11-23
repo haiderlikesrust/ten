@@ -84,7 +84,7 @@ Keep long-term funds in a Squads multisig, not in these. **Every USDC transfer y
 
 Use a new database and a separate Privy app.
 
-- [ ] `GEMDEX_MODE=mainnet`, plus `SOLANA_RPC_URL`, `SESSION_SECRET`, `ADMIN_WALLETS`, `JUPITER_API_KEY`, `CC_API_KEY`, `NEXT_PUBLIC_SOLANA_RPC`.
+- [ ] `GEMDEX_MODE=mainnet`, plus `SOLANA_RPC_URL`, `SESSION_SECRET`, `ADMIN_WALLETS`, `JUPITER_API_KEY`, `CC_API_KEY`. The site's own Solana calls go through the gateway's `/rpc` route, which uses the gateway's `SOLANA_RPC_URL`, so no RPC key is built into the site.
 - [ ] `ALLOW_MAINNET=I_UNDERSTAND_THIS_MOVES_REAL_MONEY`. Nothing starts without it.
 - [ ] Set tight limits in Admin first: daily cap $50, and only the $25 pack size switched on under Pack sizes. Each size opens once the Pulse pool has enough free money for it ($25 at $25, $500 at $3,000 by default), and open sizes mix by weight.
 - [ ] An admin presses **Arm** in Admin (`POST /admin/arm`). The arm lasts 2 hours, then signing stops by itself; **Renew arm** restarts the 2 hours. One admin is enough, so guard every wallet listed in `ADMIN_WALLETS`. While mainnet is not armed, Pulse drops no cards, limit orders wait, and nothing can be bought. A win that was mid-payment when the arm ran out is released after a minute, with nothing charged.

@@ -60,7 +60,7 @@ export function useSignIn() {
 }
 
 /** Queries that hold one account's data. They are dropped at sign-out, so nothing of theirs stays on screen. */
-const USER_QUERIES = new Set(["gifts", "portfolio", "activity", "watchlist", "rewards", "tracker", "admin"]);
+const USER_QUERIES = new Set(["gifts", "portfolio", "activity", "watchlist", "rewards", "tracker", "admin", "profile"]);
 
 export function signOut(client: QueryClient) {
   // Without this, Privy stays signed in and the wallet bridge signs straight back in on the next page load.
@@ -133,6 +133,7 @@ export function useUserEvents() {
           });
         } else if (event.kind === "market_buy") toast({ tone: "ok", title: "Bought", detail: String(result.name ?? "") });
         else if (event.kind === "buyback") toast({ tone: "ok", title: "Sold back" });
+        else if (event.kind === "sell_tenner") toast({ tone: "ok", title: `Sold to Tenner${typeof result.amount === "number" ? ` for ${formatUsd(result.amount)}` : ""}`, detail: "The USDC is in your trading wallet" });
         else if (event.kind === "list") toast({ tone: "ok", title: "Listed" });
         else if (event.kind === "send") toast({ tone: "ok", title: "Sent to your wallet" });
       }
@@ -148,6 +149,24 @@ export function useUserEvents() {
     };
   }, [client]);
   return pending;
+}
+
+interface OrderRow { state: string; step: string; error: string | null; result: { offer?: string } | null }
+
+/**
+ * Waits for a Sell to Tenner order to be ready for the user's signature. Returns the transaction to sign, or null
+ * when the order finished without needing one (paper mode, or a card in the trading wallet). Throws if it failed.
+ */
+async function waitForOffer(orderId: string): Promise<string | null> {
+  const until = Date.now() + 45_000;
+  while (Date.now() < until) {
+    const order = await api<OrderRow>(`/orders/${orderId}`);
+    if (order.state === "failed") throw new Error(order.error ?? "The sale did not go through");
+    if (order.step === "sign" && order.result?.offer) return order.result.offer;
+    if (order.state === "done" || order.step === "send") return null;
+    await new Promise((resolve) => setTimeout(resolve, 700));
+  }
+  throw new Error("Tenner is taking a while to prepare the sale. Check your portfolio in a moment.");
 }
 
 /** Cards with a buy in flight, so a double click sends one request. */
@@ -246,11 +265,25 @@ export function useTrade() {
   );
 
   /** Resolves true when the sale, listing or send went through, false when it failed or the wallet prompt was refused. */
-  const holding = useCallback(async (action: "buyback" | "list" | "send", holdingId: string, extra: { nft?: string; price?: number; inMainWallet?: boolean } = {}): Promise<boolean> => {
+  const holding = useCallback(async (action: "buyback" | "list" | "send" | "tenner", holdingId: string, extra: { nft?: string; price?: number; inMainWallet?: boolean } = {}): Promise<boolean> => {
     const { setBusy } = useUi.getState();
     setBusy([holdingId], true);
     try {
       const wallet = useUi.getState().wallet;
+      if (action === "tenner") {
+        // Tenner builds one transaction that takes the card and pays for it. A card in the user's own wallet is
+        // signed there, last; anything else the server signs for.
+        const { orderId } = await api<{ orderId: string }>(`/holdings/${holdingId}/sell-to-tenner`, { body: { idempotencyKey: newKey() } });
+        toast({ tone: "info", title: "Selling to Tenner", detail: extra.inMainWallet ? "Approve the sale in your wallet" : undefined });
+        const offer = await waitForOffer(orderId);
+        if (offer && extra.inMainWallet) {
+          if (!wallet) throw new Error("Connect your main wallet to sell this card");
+          const me = client.getQueryData<{ connectedWallet?: string }>(["me"]);
+          const signedTransaction = await wallet.signWithMain(offer, me?.connectedWallet);
+          await api(`/orders/${orderId}/sign`, { body: { signedTransaction } });
+        }
+        return true;
+      }
       if (action === "buyback" && extra.inMainWallet && wallet) {
         const { transaction } = await api<{ transaction: string }>(`/holdings/${holdingId}/buyback-tx`, { body: {} });
         const me = client.getQueryData<{ connectedWallet?: string }>(["me"]);

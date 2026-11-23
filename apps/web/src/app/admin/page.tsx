@@ -15,6 +15,49 @@ import { useNow, useUi } from "@/lib/ui";
 interface DropSettings {
   enabled: boolean; minPrice: number; maxPrice: number; crashLo: number; crashHi: number; hiddenShare: number; intervalFloorSec: number; ttlSec: number;
   relists: number; winCooldownSec: number; dailySpendCap: number; walletFloor: number; budgetPerDayFallback: number; ladder: PackTier[];
+  sellEnabled?: boolean; sellMax?: number;
+}
+
+/** Sell to Tenner: users sell cards to Tenner at the buyback price, and Pulse drops them instead of packs. */
+function SellSettings({ settings }: { settings: DropSettings }) {
+  const client = useQueryClient();
+  const toast = useUi((s) => s.toast);
+  const [max, setMax] = useState(String((settings.sellMax ?? usd(100)) / 1e6));
+  useEffect(() => setMax(String((settings.sellMax ?? usd(100)) / 1e6)), [settings.sellMax]);
+  const save = useMutation({
+    mutationFn: (body: { sellEnabled?: boolean; sellMax?: number }) => api("/admin/settings/drops", { method: "PATCH", body }),
+    onSuccess: async () => {
+      await client.invalidateQueries({ queryKey: ["admin"] });
+      void client.invalidateQueries({ queryKey: ["meta"] });
+      toast({ tone: "ok", title: "Saved" });
+    },
+    onError: (error) => toast({ tone: "bad", title: (error as Error).message }),
+  });
+  const typed = typedNumber(max, 1e6);
+  return (
+    <section className="slab">
+      <SectionTitle>Sell to Tenner</SectionTitle>
+      <div className="flex flex-col gap-3 px-4 pb-4">
+        <p className="text-[13px] text-faint">
+          Users sell a pulled card to Tenner for the same price Collector Crypt&apos;s buyback pays. It drops in Pulse instead of a pack, and if nobody buys it,
+          it goes back to Collector Crypt for that same price. Try one cheap card first and check it gets sold back.
+        </p>
+        <Toggle checked={!!settings.sellEnabled} onChange={(on) => save.mutate({ sellEnabled: on })}>Sell to Tenner on</Toggle>
+        <form
+          className="flex items-end gap-2"
+          onSubmit={(event) => {
+            event.preventDefault();
+            if (typed !== null && typed > 0) save.mutate({ sellMax: Math.round(typed * 1e6) });
+          }}
+        >
+          <Field label="Most Tenner pays for one card $">
+            <input className={inputClass} inputMode="decimal" value={max} onChange={(e) => setMax(e.target.value)} />
+          </Field>
+          <Button type="submit" className="h-10" disabled={save.isPending || typed === null || typed <= 0}>Save</Button>
+        </form>
+      </div>
+    </section>
+  );
 }
 
 interface PackTier { price: number; unlockAt: number; weight: number; enabled: boolean; machines: string[] }
@@ -370,6 +413,7 @@ export default function AdminPage() {
 
           <div className="flex min-w-0 flex-col gap-3">
             {data.mode !== "paper" ? <TreasuryTransfers data={data} now={now} /> : null}
+            <SellSettings settings={data.settings.drops} />
             {data.settings.flywheel ? <FlywheelSettingsForm settings={data.settings.flywheel} /> : null}
             <section className="slab">
               <SectionTitle>Fee pipeline</SectionTitle>

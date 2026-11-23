@@ -421,3 +421,46 @@ describe("sell-back", () => {
     await expect(sell(20_000_000n, "legacy")).rejects.toThrow(TxRefused);
   });
 });
+
+describe("Sell to Tenner", () => {
+  const seller = Keypair.generate();
+
+  /** The offer as Tenner signs it: fee payer and Drops have signed, the seller has not. */
+  async function offer(extra?: TransactionInstruction) {
+    const feePayer = await signer.addressOf(role("feePayer"));
+    const drops = await signer.addressOf(role("drops"));
+    const tx = new Transaction({ feePayer, blockhash, lastValidBlockHeight: 1 });
+    tx.add(new TransactionInstruction({
+      programId: MEMO_PROGRAM, data: Buffer.from("tenner:sell:test"),
+      keys: [{ pubkey: seller.publicKey, isSigner: true, isWritable: false }, { pubkey: drops, isSigner: true, isWritable: false }],
+    }));
+    if (extra) tx.add(extra);
+    await signer.sign(tx, role("feePayer"));
+    await signer.sign(tx, role("drops"));
+    return tx;
+  }
+  const b64 = (tx: Transaction) => tx.serialize({ requireAllSignatures: false, verifySignatures: false }).toString("base64");
+  const sale = (offered: string, signed: string) => ({
+    type: "cardSale" as const, seller: { kind: "address" as const, address: seller.publicKey.toBase58() }, nft: "nft", amount: 1, payTo: role("drops"), memo: "m", offer: offered, signed,
+  });
+
+  it("sends the seller's signed copy of exactly the offered transaction", async () => {
+    const offered = await offer();
+    const signed = Transaction.from(Buffer.from(b64(offered), "base64"));
+    signed.partialSign(seller);
+    const prepared = await venueWith(fakeRpc()).chain.prepare(sale(b64(offered), b64(signed)));
+    expect(prepared.signature).toBe(bs58.encode(offered.signature!));
+  });
+
+  it("refuses a copy the wallet changed, one missing the seller's signature, and one signed too late", async () => {
+    const offered = await offer();
+    const changed = await offer(new TransactionInstruction({ programId: MEMO_PROGRAM, keys: [], data: Buffer.from("tip") }));
+    changed.partialSign(seller);
+    await expect(venueWith(fakeRpc()).chain.prepare(sale(b64(offered), b64(changed)))).rejects.toThrow(/changed the sale/);
+    await expect(venueWith(fakeRpc()).chain.prepare(sale(b64(offered), b64(offered)))).rejects.toThrow(/missing a signature/);
+    const signed = Transaction.from(Buffer.from(b64(offered), "base64"));
+    signed.partialSign(seller);
+    const expired = fakeRpc({ isBlockhashValid: vi.fn(async () => ({ value: false })) });
+    await expect(venueWith(expired).chain.prepare(sale(b64(offered), b64(signed)))).rejects.toThrow(/expired/);
+  });
+});

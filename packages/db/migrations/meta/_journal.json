@@ -71,6 +71,13 @@
       "when": 1795470000000,
       "tag": "0009_listing_keys",
       "breakpoints": true
+    },
+    {
+      "idx": 10,
+      "version": "7",
+      "when": 1795480000000,
+      "tag": "0010_profiles_sell_to_tenner",
+      "breakpoints": true
     }
   ]
 }

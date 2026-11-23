@@ -57,6 +57,16 @@ export const MAX_PACK_PAY_ATTEMPTS = 3;
 export const BUYBACK_SAFETY_SEC = 6 * 3600;
 export const BUYBACK_WINDOW_SEC = 72 * 3600;
 
+/**
+ * Sell to Tenner. Tenner only buys a card whose buyback offer has at least this long left, so the card can wait its
+ * turn in Pulse, run, and still be sold back with the usual safety margin to spare.
+ */
+export const SELL_MIN_LEFT_SEC = BUYBACK_SAFETY_SEC + 6 * 3600;
+/** A sold card goes live by this long before its sell-back deadline at the latest, even when Pulse is busy. */
+export const SELL_RELEASE_BY_SEC = 2 * 3600;
+/** The machine code a card sold to Tenner carries. It came from no pack. */
+export const SOLD_TO_TENNER = "sold_to_tenner";
+
 export interface DropView {
   id: string; number: number; kind: DropKind; state: string; machineCode: string;
   price: number | null; packPrice: number; opensAt: Date | null; expiresAt: Date | null;

@@ -26,8 +26,23 @@ export const users = pgTable("users", {
   strikes: integer("strikes").notNull().default(0),
   lastWinAt: ts("last_win_at"),
   settings: jsonb("settings").$type<UserSettings>().notNull().default({}),
+  /** Public profile. A username is unique ignoring case, and null until the user picks one. */
+  username: text("username"),
+  bio: text("bio"),
+  xHandle: text("x_handle"),
+  /** Names the user's picture in `avatars`. A new picture gets a new key, so its URL can be cached for ever. */
+  avatarKey: text("avatar_key"),
   createdAt: createdAt(),
-});
+}, (t) => [uniqueIndex("users_username_idx").on(sql`lower(${t.username})`)]);
+
+/** Profile pictures, apart from `users` so loading an account never carries an image. */
+export const avatars = pgTable("avatars", {
+  key: text("key").primaryKey(),
+  userId: uuid("user_id").notNull().references(() => users.id),
+  contentType: text("content_type").notNull(),
+  data: text("data").notNull(),
+  createdAt: createdAt(),
+}, (t) => [index("avatars_user_idx").on(t.userId)]);
 
 export interface UserSettings {
   quickBuy?: number[];
@@ -73,6 +88,8 @@ export const drops = pgTable("drops", {
   id: uuid("id").primaryKey().defaultRandom(),
   number: serial("number").notNull(),
   kind: text("kind").$type<"revealed" | "hidden">().notNull(),
+  /** "pack": Tenner opened a pack for it. "user": a user sold the card to Tenner (Sell to Tenner). */
+  origin: text("origin").$type<"pack" | "user">().notNull().default("pack"),
   state: text("state").notNull(),
   machineCode: text("machine_code").notNull(),
   packPrice: micros("pack_price").notNull(),
@@ -178,7 +195,7 @@ export const ccPacks = pgTable("cc_packs", {
 export const orders = pgTable("orders", {
   id: uuid("id").primaryKey().defaultRandom(),
   userId: uuid("user_id").notNull().references(() => users.id),
-  kind: text("kind").$type<"market_buy" | "gacha_open" | "buyback" | "list" | "send">().notNull(),
+  kind: text("kind").$type<"market_buy" | "gacha_open" | "buyback" | "list" | "send" | "sell_tenner">().notNull(),
   params: jsonb("params").$type<Record<string, unknown>>().notNull(),
   state: text("state").$type<"queued" | "running" | "done" | "failed">().notNull().default("queued"),
   step: text("step").notNull().default("start"),

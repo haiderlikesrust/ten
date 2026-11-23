@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import { parseUsd, usd, type Micros, type Rarity } from "@gemdex/core";
 import { and, ccPacks, eq, isNull, machines, paperChain, paperTx, poolCards, sql, type Db, type Tx } from "@gemdex/db";
 import {
-  AddressBlocked, AmbiguousSend, MachineDown, type BuybackQuote, type ChainOp, type ChainVenue, type FeeVenue,
+  AddressBlocked, AmbiguousSend, MachineDown, role, type BuybackQuote, type ChainOp, type ChainVenue, type FeeVenue,
   type GachaVenue, type GeneratedPack, type MarketVenue, type OpenResult, type PaidPack, type Party, type PreparedTx, type Role,
   type TxStatus, type UsdcMoved, type Venue,
 } from "./types";
@@ -82,7 +82,7 @@ class PaperChainVenue implements ChainVenue {
   async simulate(raw: string): Promise<{ ok: boolean; reason?: string }> {
     if (this.roll("simulate_fail")) return { ok: false, reason: "simulated failure" };
     const { op } = JSON.parse(raw) as { op: ChainOp };
-    const source = op.type === "settle" ? op.buyer : op.type === "usdc" ? op.from : op.type === "ccPack" ? op.payer : null;
+    const source = op.type === "settle" ? op.buyer : op.type === "usdc" ? op.from : op.type === "ccPack" ? op.payer : op.type === "cardSale" ? role("drops") : null;
     if (!source || !("amount" in op)) return { ok: true };
     const balance = await this.usdcBalance(source);
     return balance >= op.amount ? { ok: true } : { ok: false, reason: "insufficient funds on chain" };
@@ -130,6 +130,8 @@ class PaperChainVenue implements ChainVenue {
         return move("cc", accountOf(op.recipient), op.amount);
       case "ccBuy":
         return move(accountOf(op.buyer), "world", op.amount);
+      case "cardSale":
+        return move("drops", accountOf(op.payTo), op.amount);
       case "split": {
         if (!(await debit(tx, "fee", op.cashback + op.drops))) return false;
         await credit(tx, "cashback", op.cashback);

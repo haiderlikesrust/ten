@@ -17,6 +17,7 @@ import { createPaperUser, grantPaperFunds, issueSession, loadUser, privySession,
 import { claimDrop } from "./claim";
 import { convertRoutes } from "./convert";
 import { flywheelRoutes } from "./flywheel";
+import { profileRoutes } from "./profiles";
 import { Realtime } from "./realtime";
 import { rpcRoutes } from "./rpc";
 import { cheapestElsewhere, withElsewhere } from "./elsewhere";
@@ -114,6 +115,7 @@ function settingsProblem(key: SettingsKey, next: unknown): string | null {
     if (d.intervalFloorSec < 1) return "The fastest interval is at least 1 second";
     if (d.lockedHoldSec > 86_400 || d.winCooldownSec > 86_400) return "Hold and cooldown times can be a day at most";
     if (!validLadder(d.ladder)) return "Each pack size needs a price, an unlock amount, a weight and at least one machine";
+    if (typeof d.sellEnabled !== "boolean" || !whole(d.sellMax) || d.sellMax <= 0) return "Sell to Tenner needs an on/off and a top price above zero";
   }
   if (key === "flywheel") {
     const f = next as FlywheelSettings;
@@ -278,6 +280,7 @@ export async function buildServer(opts: ServerOptions) {
     return {
       mode, brand: BRAND, minPrice: drop.minPrice, maxPrice: drop.maxPrice, winCooldownSec: drop.winCooldownSec, ttlSec: drop.ttlSec, tiers: cashback.tiers,
       paper: mode === "paper", tokenMint: process.env.GEMDEX_TOKEN_MINT || null, accessBps: flywheel.accessBps,
+      sellToTenner: { enabled: drop.sellEnabled, max: drop.sellMax },
     };
   });
 
@@ -434,15 +437,6 @@ export async function buildServer(opts: ServerOptions) {
     return pullers.rows;
   });
 
-  app.get("/leaderboard", async () => {
-    const rows = await raw<{ handle: string; wins: string; spent: string; value: string }[]>`
-      select u.handle, count(*) as wins, coalesce(sum(h.cost), 0) as spent, coalesce(sum(h.insured_value), 0) as value
-      from holdings h join users u on u.id = h.user_id
-      where h.source = 'drop' and h.acquired_at > now() - interval '7 days'
-      group by u.handle order by count(*) desc limit 20`;
-    return rows.map((row) => ({ handle: row.handle, wins: Number(row.wins), spent: Number(row.spent), value: Number(row.value) }));
-  });
-
   // Session ---------------------------------------------------------------------
 
   app.post("/auth/paper", async (request, reply) => {
@@ -479,6 +473,7 @@ export async function buildServer(opts: ServerOptions) {
     const access = await accessOf(user, false).catch(() => null);
     return {
       id: user.id, handle: user.handle, tradingWallet: user.tradingWallet, connectedWallet: user.connectedWallet, holderWallet: user.holderWallet,
+      username: user.username, avatarUrl: user.avatarKey ? `/avatars/${user.avatarKey}` : null,
       isAdmin: isAdmin(user), strikes: user.strikes, settings: user.settings, balance, available, held: balance - available,
       cooldownSec: Math.max(0, Math.ceil(left)), tokens, tier: tierFor(tokens, cashback.tiers), access,
     };
@@ -667,6 +662,50 @@ export async function buildServer(opts: ServerOptions) {
       await tx.update(holdings).set({ status: "bought_back", exitPrice: offer?.amount ?? holding.buybackAmount, exitedAt: new Date() }).where(eq(holdings.id, holding.id));
       await tx.insert(activity).values({ userId, kind: "sell", title: `Sold back ${String(holding.card.name ?? "a card")}`, delta: 0, ref: holding.nft });
     });
+    return { ok: true };
+  });
+
+  // Sell to Tenner ----------------------------------------------------------------
+  // Tenner buys the card for what Collector Crypt's buyback pays and drops it in Pulse. The worker builds one
+  // transaction that moves the card and pays the user; a card in the user's own wallet is signed there, last.
+
+  app.post("/holdings/:id/sell-to-tenner", async (request, reply) => {
+    const userId = await userIdFrom(request);
+    if (!requireUser(request, reply, userId)) return;
+    const { id } = request.params as { id: string };
+    const { idempotencyKey } = (request.body ?? {}) as { idempotencyKey?: string };
+    if (!UUID.test(id) || typeof idempotencyKey !== "string" || !idempotencyKey) return reply.code(400).send({ error: "Bad order" });
+    const settings = await getSetting(db, "drops");
+    if (!settings.sellEnabled) return reply.code(400).send({ error: "Sell to Tenner is switched off right now" });
+    const held = await db.select({ id: holdings.id }).from(holdings).where(and(eq(holdings.id, id), eq(holdings.userId, userId), eq(holdings.status, "held"))).limit(1);
+    if (!held[0]) return reply.code(404).send({ error: "You do not hold this card" });
+    // One sale per card at a time, so a double click can't start two.
+    const open = await db.select({ id: orders.id }).from(orders)
+      .where(and(eq(orders.userId, userId), eq(orders.kind, "sell_tenner"), inArray(orders.state, ["queued", "running"]), sql`${orders.params}->>'holdingId' = ${id}`)).limit(1);
+    if (open[0]) return { orderId: open[0].id };
+    const paused = await tradingPaused();
+    if (paused) return reply.code(503).send({ error: paused });
+    return order(request, reply, userId, { userId, kind: "sell_tenner", params: { holdingId: id }, holdAmount: 0, idempotencyKey });
+  });
+
+  /** The user's signed copy of a sale offer. Saved for the worker, which checks it is the offered transaction before sending. */
+  app.post("/orders/:id/sign", async (request, reply) => {
+    const userId = await userIdFrom(request);
+    if (!requireUser(request, reply, userId)) return;
+    const { id } = request.params as { id: string };
+    const { signedTransaction } = (request.body ?? {}) as { signedTransaction?: string };
+    if (!UUID.test(id) || typeof signedTransaction !== "string" || !signedTransaction || signedTransaction.length > 4_000) return reply.code(400).send({ error: "Bad transaction" });
+    const rows = await db.select().from(orders).where(and(eq(orders.id, id), eq(orders.userId, userId)));
+    const row = rows[0];
+    if (!row || row.kind !== "sell_tenner") return reply.code(404).send({ error: "Not found" });
+    if (row.state !== "running" || row.step !== "sign") return reply.code(409).send({ error: "This sale is no longer waiting for a signature" });
+    const result = (row.result ?? {}) as Record<string, unknown>;
+    const holdingRows = await db.select({ nft: holdings.nft }).from(holdings).where(eq(holdings.id, String((row.params as { holdingId?: string }).holdingId ?? "")));
+    if (!holdingRows[0] || !mentionsAccount(signedTransaction, holdingRows[0].nft)) return reply.code(400).send({ error: "That transaction is not this card's sale. Start again." });
+    // Only written while the sale still waits, so a late copy never lands on a finished order.
+    const updated = await db.update(orders).set({ result: { ...result, signed: signedTransaction }, nextRunAt: new Date(), updatedAt: new Date() })
+      .where(and(eq(orders.id, id), eq(orders.step, "sign"), eq(orders.state, "running"))).returning({ id: orders.id });
+    if (!updated[0]) return reply.code(409).send({ error: "This sale is no longer waiting for a signature" });
     return { ok: true };
   });
 
@@ -950,6 +989,8 @@ export async function buildServer(opts: ServerOptions) {
 
   // The $TENR flywheel: its public page and gift claims (docs/FLYWHEEL.md).
   flywheelRoutes(app, { database, accessRefusal, tradingPaused });
+  // Public profiles and the sniping leaderboard.
+  profileRoutes(app, { database });
   // SOL in a trading wallet, turned into USDC when the user asks.
   convertRoutes(app, { database, mode });
   // The browser's Solana RPC, so no RPC key is ever built into the site.

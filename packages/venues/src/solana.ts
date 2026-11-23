@@ -426,6 +426,55 @@ class SolanaChain implements ChainVenue {
     if (tokens(afterData(recipientAt)) - tokens(before[recipientAt]?.data) < BigInt(op.amount)) throw new TxRefused("the sale pays less than CC quoted");
   }
 
+  /**
+   * Sell to Tenner, step one: the card from the seller to the Vault and the money from Drops to the seller, as one
+   * transaction. It is simulated before anything signs, so a card the seller no longer holds, or a short Drops
+   * wallet, ends here. The fee payer and Drops sign it; an outside seller signs last in their own wallet. Because the
+   * seller's signature is what makes it valid, Tenner's signatures alone can never move anything.
+   */
+  private async offerSale(op: Extract<ChainOp, { type: "cardSale" }>, payer: PublicKey): Promise<PreparedTx> {
+    const seller = await this.address(op.seller);
+    const vault = await this.address(role("vault"));
+    const collection = await this.collectionOf(op.nft);
+    const { blockhash, lastValidBlockHeight } = await this.config.connection.getLatestBlockhash("confirmed");
+    const tx = new Transaction({ feePayer: payer, blockhash, lastValidBlockHeight });
+    tx.add(ComputeBudgetProgram.setComputeUnitLimit({ units: 120_000 }));
+    tx.add(ComputeBudgetProgram.setComputeUnitPrice({ microLamports: 20_000 }));
+    tx.add(...(await this.coreIx(op.nft, seller, vault, payer, collection)));
+    tx.add(...(await this.usdcIx(role("drops"), op.payTo, op.amount, payer)));
+    tx.add(this.memo(op.memo));
+    const unsigned = new VersionedTransaction(VersionedMessage.deserialize(tx.compileMessage().serialize()));
+    const simulation = await this.config.connection.simulateTransaction(unsigned, { sigVerify: false, commitment: "confirmed" });
+    if (simulation.value.err) throw new TxRefused(`the sale fails in simulation: ${JSON.stringify(simulation.value.err)}`);
+    for (const party of [role("feePayer"), role("drops")]) await this.config.signer.sign(tx, party);
+    // A card in the user's trading wallet is signed for here too, through Privy. One in their own wallet is not.
+    const outside = op.seller.kind === "address";
+    if (!outside) await this.config.signer.sign(tx, op.seller);
+    const b64 = toB64(tx.serialize({ requireAllSignatures: !outside, verifySignatures: false }));
+    return { ...this.envelope({ via: "rpc", b64, signature: bs58.encode(tx.signature!), blockhash, lastValidBlockHeight }), ...(outside ? { toSign: b64 } : {}) };
+  }
+
+  /**
+   * Sell to Tenner, step two: the seller's signed copy. It must be the offered transaction byte for byte, with every
+   * signature present and valid. A wallet that changed anything (an added fee, say) is refused rather than sent.
+   */
+  private async signedSale(op: Extract<ChainOp, { type: "cardSale" }>): Promise<PreparedTx> {
+    if (!op.offer || !op.signed) throw new TxRefused("there is no offer to check the signed sale against");
+    let offer: Transaction;
+    let signed: Transaction;
+    try {
+      offer = Transaction.from(fromB64(op.offer));
+      signed = Transaction.from(fromB64(op.signed));
+    } catch {
+      throw new TxRefused("the signed sale is not a readable transaction");
+    }
+    if (!signed.serializeMessage().equals(offer.serializeMessage())) throw new TxRefused("your wallet changed the sale before signing it");
+    if (!signed.verifySignatures(true)) throw new TxRefused("the sale is missing a signature");
+    const blockhash = signed.recentBlockhash!;
+    if (!(await this.blockhashAlive(blockhash))) throw new TxRefused("the offer expired before it was signed");
+    return this.envelope({ via: "rpc", b64: toB64(signed.serialize()), signature: bs58.encode(signed.signature!), blockhash });
+  }
+
   private envelope(envelope: Envelope): PreparedTx {
     return { signature: envelope.signature, raw: JSON.stringify(envelope), validUntil: new Date(Date.now() + 60_000) };
   }
@@ -470,6 +519,8 @@ class SolanaChain implements ChainVenue {
         return this.ccBuilt(op.raw, op.buyer, "market", { check: (tx) => this.checkSpend(tx, op.buyer, op.amount, "purchase") });
       case "ccList":
         return this.ccBuilt(op.raw, op.owner, "market", { check: (tx) => this.checkSpend(tx, op.owner, 0, "listing") });
+      case "cardSale":
+        return op.signed ? this.signedSale(op) : this.offerSale(op, payer);
       case "feeCollect":
         return this.own(await this.collectIx(), []);
       case "swap":

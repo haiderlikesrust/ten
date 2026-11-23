@@ -21,6 +21,13 @@ export type ChainOp =
   | { type: "ccBuyback"; owner: Party; recipient: Party; nft: string; amount: Micros; raw: string }
   | { type: "ccBuy"; buyer: Party; nft: string; amount: Micros; raw: string }
   | { type: "ccList"; owner: Party; nft: string; amount: Micros; raw: string }
+  /**
+   * Sell to Tenner, in one transaction: the card moves from the seller to the Vault and the Drops wallet pays the
+   * seller. Without `signed` it is built and signed by everyone but an outside seller, who signs last in their own
+   * wallet (`PreparedTx.toSign`); those bytes are never sent as they are. With `signed`, the seller's copy must be
+   * exactly that `offer`, with every signature in place.
+   */
+  | { type: "cardSale"; seller: Party; nft: string; amount: Micros; payTo: Party; memo: string; offer?: string; signed?: string }
   | { type: "split"; cashback: Micros; drops: Micros; memo: string }
   | { type: "feeCollect" }
   | { type: "swap"; cardsIn: number; minOut: Micros }
@@ -34,6 +41,8 @@ export interface PreparedTx {
   raw: string;
   /** Past this the blockhash is dead, so the bytes can never land. */
   validUntil: Date;
+  /** Base64 transaction still waiting for an outside signer (a card sale offer). */
+  toSign?: string;
 }
 
 export type TxStatus = "confirmed" | "failed" | "pending" | "dead";

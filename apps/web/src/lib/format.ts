@@ -51,6 +51,8 @@ export function gradeShort(grader: string | null | undefined, grade: string | nu
 
 /** "pokemon_25" reads as "Pokemon $25". */
 export function packLabel(code: string): string {
+  // A card a user sold to Tenner came from no pack.
+  if (code === "sold_to_tenner") return "Sold to Tenner";
   const parts = code.split("_");
   const price = parts.at(-1);
   const hasPrice = !!price && /^\d+$/.test(price);

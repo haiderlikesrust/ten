@@ -120,6 +120,9 @@ export interface Me {
   tradingWallet: string;
   connectedWallet: string;
   holderWallet: string | null;
+  /** Public profile name, once picked. */
+  username?: string | null;
+  avatarUrl?: string | null;
   isAdmin: boolean;
   strikes: number;
   settings: { quickBuy?: number[]; tradeLimitUsd?: number; autoForward?: boolean; soundOn?: boolean };
@@ -143,6 +146,8 @@ export interface Meta {
   tiers: Tier[];
   tokenMint: string | null;
   accessBps: number;
+  /** Sell to Tenner: whether it is on, and the most Tenner pays for one card. Missing on an older server. */
+  sellToTenner?: { enabled: boolean; max: number };
 }
 
 export interface Holding {

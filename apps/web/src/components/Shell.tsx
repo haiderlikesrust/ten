@@ -2,12 +2,12 @@
 
 import { BRAND } from "@gemdex/core";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { Bot, Compass, FileText, Gift, Landmark, LayoutGrid, LogOut, Moon, Radar, Settings2, Sun, Users, Wallet, type LucideIcon } from "lucide-react";
+import { Bot, Compass, FileText, Gift, Landmark, LayoutGrid, LogOut, Moon, Radar, Settings2, Sun, UserRound, Users, Wallet, type LucideIcon } from "lucide-react";
 import dynamic from "next/dynamic";
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
-import { api } from "@/lib/api";
+import { GATEWAY, api } from "@/lib/api";
 import { useBuySize } from "@/lib/buySize";
 import { clock, compactUsd, money, pauseReason } from "@/lib/format";
 import { connectStream, resyncLive, useLive } from "@/lib/live";
@@ -48,6 +48,7 @@ const NAV: NavItem[] = [
   { href: "/gacha", label: "Gacha", icon: "pack" },
   { href: "/portfolio", label: "Portfolio", icon: "slab", phone: true },
   { href: "/tracker", label: "Tracker", icon: "eye" },
+  { href: "/leaderboard", label: "Leaders", icon: "trophy" },
   { href: "/rewards", label: "Rewards", icon: "star" },
 ];
 
@@ -195,6 +196,7 @@ function MenuLinks({ onClose }: { onClose: () => void }) {
   const me = useMe();
   const client = useQueryClient();
   const links: Array<[string, string, LucideIcon]> = [
+    ["/profile", me?.username ? "Your profile" : "Set up your profile", UserRound],
     ["/wallet", "Trading wallet", Wallet],
     ["/portfolio", "Portfolio", LayoutGrid],
     ["/rewards", "Rewards", Gift],
@@ -213,10 +215,10 @@ function MenuLinks({ onClose }: { onClose: () => void }) {
   );
 }
 
-function Avatar({ handle }: { handle: string }) {
+function Avatar({ handle, src }: { handle: string; src?: string | null }) {
   return (
-    <span className="px-box flex h-8 w-8 shrink-0 items-center justify-center [--s:2px]">
-      <span className="pixel text-[14px] uppercase leading-none text-bone">{handle.slice(0, 1)}</span>
+    <span className="px-box flex h-8 w-8 shrink-0 items-center justify-center overflow-hidden [--s:2px]">
+      {src ? <img src={GATEWAY + src} alt="" className="h-full w-full object-cover" /> : <span className="pixel text-[14px] uppercase leading-none text-bone">{handle.slice(0, 1)}</span>}
     </span>
   );
 }
@@ -255,14 +257,14 @@ function AccountMenu() {
         <PixelIcon name="plus" scale={1.5} />
       </Link>
       <button type="button" aria-haspopup="menu" aria-expanded={open} aria-label="Account menu" onClick={() => setOpen((v) => !v)} className="flex h-11 w-11 items-center justify-center transition-opacity hover:opacity-80 sm:h-8 sm:w-8">
-        <Avatar handle={me.handle} />
+        <Avatar handle={me.username ?? me.handle} src={me.avatarUrl} />
       </button>
       {open ? (
         <div role="menu" className="sheet slab absolute right-0 top-[calc(100%+10px)] z-50 w-[230px] p-1.5 [--px-line:var(--line-strong)]">
           <div className="flex items-center gap-2.5 px-2.5 py-2">
-            <Avatar handle={me.handle} />
+            <Avatar handle={me.username ?? me.handle} src={me.avatarUrl} />
             <div className="min-w-0">
-              <div className="truncate font-semibold">@{me.handle}</div>
+              <div className="truncate font-semibold">@{me.username ?? me.handle}</div>
               <div className="truncate text-[12.5px] text-faint">{me.tier ? `${me.tier.name} holder` : "No holder tier"}</div>
             </div>
           </div>

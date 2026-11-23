@@ -6,6 +6,7 @@ import { MachineDown, AddressBlocked, ListingGone, role, trader, type OpenResult
 import { PACK_REVIEW_MS, confirmedSignature, sendOnce } from "./chain-tx";
 import { accrueCashback } from "./cashback";
 import type { Ctx } from "./ctx";
+import { runSellToTenner } from "./sell";
 
 type Order = typeof orders.$inferSelect;
 type User = typeof users.$inferSelect;
@@ -303,6 +304,7 @@ export async function tickOrders(ctx: Ctx): Promise<number> {
         else if (order.kind === "buyback") await runBuyback(ctx, order, user);
         else if (order.kind === "list") await runList(ctx, order, user);
         else if (order.kind === "send") await runSend(ctx, order, user);
+        else if (order.kind === "sell_tenner") await runSellToTenner(ctx, order, user);
       } catch (error) {
         ctx.log(`order ${order.id} ${order.kind}/${order.step} failed`, error instanceof Error ? error.message : error);
         await retry(ctx, order, 2_000);

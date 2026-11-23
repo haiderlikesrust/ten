@@ -4,7 +4,7 @@ import { splitSale,
 } from "@gemdex/core";
 import {
   activity, and, balanceOf, ccPacks, chainTx, claims, closeHold, drops, emit, eq, getSetting, holdings, inArray, isNull, loadJson, machines,
-  pausedBy, post, saveJson, sql, userAccount, users, type Drop,
+  orders, pausedBy, post, saveJson, sql, userAccount, users, type DbOrTx, type Drop,
 } from "@gemdex/db";
 import { AddressBlocked, CardFrozen, MachineDown, TxRefused, role, trader, type OpenResult, type Party } from "@gemdex/venues";
 import { PACK_REVIEW_MS, REVIEW_CHECK_MS, confirmedSignature, sendOnce, type SendResult } from "./chain-tx";
@@ -528,6 +528,33 @@ export async function promisedToPacks(ctx: Ctx): Promise<number> {
   return Number(rows[0]?.total ?? 0);
 }
 
+/**
+ * Money promised to Sell to Tenner sales still under way, so a pack can't spend it first. A sale reserves its
+ * amount when it is accepted and keeps it until it is booked or ends.
+ */
+export async function promisedToSales(db: DbOrTx, exceptOrderId?: string): Promise<number> {
+  const rows = await db
+    .select({ total: sql<string>`coalesce(sum((${orders.result}->>'amount')::bigint), 0)` })
+    .from(orders)
+    .where(and(eq(orders.kind, "sell_tenner"), inArray(orders.state, ["queued", "running"]), exceptOrderId ? sql`${orders.id} <> ${exceptOrderId}` : sql`true`));
+  return Number(rows[0]?.total ?? 0);
+}
+
+/**
+ * Puts the oldest card someone sold to Tenner on sale now, in the slot a pack would have taken. It was already paid
+ * for, so a pool too low for a pack, or today's spend cap, doesn't hold it back. Returns whether one went.
+ */
+async function releaseSoldCard(ctx: Ctx): Promise<boolean> {
+  const rows = await ctx.sql<{ id: string }[]>`
+    update drops set next_run_at = now(), updated_at = now()
+    where id = (
+      select id from drops where origin = 'user' and state = 'IN_VAULT' and next_run_at > now()
+      order by created_at limit 1 for update skip locked
+    )
+    returning id`;
+  return rows.length > 0;
+}
+
 async function lastPackPrice(ctx: Ctx): Promise<number | null> {
   const rows = await ctx.db.select({ price: drops.packPrice }).from(drops).orderBy(sql`${drops.createdAt} desc`).limit(1);
   return rows[0]?.price ?? null;
@@ -541,7 +568,10 @@ export async function tickScheduler(ctx: Ctx): Promise<DropsStatus> {
     loadJson<DropsStatus>(ctx.db, "dropsStatus"),
   ]);
   const econ = rows.map(toEcon);
-  const [{ spent, income }, dropsBalance, promised, lastPrice] = await Promise.all([rolling24h(ctx), balanceOf(ctx.db, "drops"), promisedToPacks(ctx), lastPackPrice(ctx)]);
+  const [{ spent, income }, dropsBalance, packsPromised, salesPromised, lastPrice] = await Promise.all([
+    rolling24h(ctx), balanceOf(ctx.db, "drops"), promisedToPacks(ctx), promisedToSales(ctx.db), lastPackPrice(ctx),
+  ]);
+  const promised = packsPromised + salesPromised;
   // On mainnet nothing can be signed outside an armed window. A card dropped then could not be paid for or bought:
   // shown cards queued up unpaid, and sealed ones went live with nobody able to buy them.
   const notArmed = pausedBy(ops, ctx.venue.mode) === "not_armed";
@@ -574,6 +604,16 @@ export async function tickScheduler(ctx: Ctx): Promise<DropsStatus> {
   const soonest = Date.now() + interval * 1000;
   if (status.nextDropAt && Number.isFinite(soonest) && new Date(status.nextDropAt).getTime() > soonest) status.nextDropAt = new Date(soonest).toISOString();
   const due = !status.nextDropAt || new Date(status.nextDropAt).getTime() <= Date.now();
+  // A card sold to Tenner takes the next slot instead of a pack. Only a pause that stops everything holds it back.
+  const budgetOnly = paused === null || paused === "wallet_floor" || paused === "daily_cap";
+  if (due && budgetOnly && (await releaseSoldCard(ctx))) {
+    const gap = Math.max(settings.intervalFloorSec, Number.isFinite(interval) ? interval : 60);
+    status.nextDropAt = new Date(Date.now() + gap * 1000).toISOString();
+    if (status.pausedFor === "no_budget") status.pausedFor = null;
+    await saveJson(ctx.db, "dropsStatus", status);
+    await emit(ctx.db, "status", { type: "dropsStatus", status });
+    return status;
+  }
   if (!status.pausedFor && mix.length === 0) {
     // Nothing fits: today's cap has no room left for any size the pool could open, or the pool can't cover the
     // smallest open size yet, or no size has a machine that can sell.

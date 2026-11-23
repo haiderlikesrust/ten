@@ -1,6 +1,6 @@
 "use client";
 
-import { BRAND } from "@gemdex/core";
+import { BRAND, SELL_MIN_LEFT_SEC } from "@gemdex/core";
 import { useQuery } from "@tanstack/react-query";
 import { Briefcase, Clock3, Copy, Download, LayoutGrid, List, Search, Share2, Truck, X } from "lucide-react";
 import Link from "next/link";
@@ -11,8 +11,8 @@ import { api } from "@/lib/api";
 import { ago, cardTitle, clock, money } from "@/lib/format";
 import { PNL_HEIGHT, PNL_WIDTH, drawPnlCard, type PnlCardData } from "@/lib/pnlCard";
 import { buildHistory, inRange, sortHoldings, splitCollection, type HistoryPoint, type HoldingSort, type SplitBy } from "@/lib/portfolio";
-import { useMe, useTrade } from "@/lib/session";
-import type { ActivityRow, Holding, Portfolio } from "@/lib/types";
+import { useMe, useMeta, useTrade } from "@/lib/session";
+import type { ActivityRow, Holding, Meta, Portfolio } from "@/lib/types";
 import { useNow, useUi } from "@/lib/ui";
 import { sized } from "@/lib/image";
 
@@ -26,6 +26,12 @@ const RANGES: Array<{ value: string; label: string; hours: number | null }> = [
 
 function isSellable(holding: Holding, now: number): boolean {
   return holding.status === "held" && !!holding.buybackAmount && !!holding.buybackUntil && new Date(holding.buybackUntil).getTime() > now;
+}
+
+/** Tenner takes a card for the same buyback price while it has time left to run in Pulse and still be sold back. */
+function tennerTakes(holding: Holding, now: number, offer: Meta["sellToTenner"]): boolean {
+  if (!offer?.enabled || !isSellable(holding, now)) return false;
+  return holding.buybackAmount! <= offer.max && new Date(holding.buybackUntil!).getTime() - now >= SELL_MIN_LEFT_SEC * 1000;
 }
 
 /** Sets a sale price in one place, for both the card grid and the list. */
@@ -62,20 +68,36 @@ function HoldingActions({ holding, onList }: { holding: Holding; onList: () => v
   const now = useNow();
   // Being sold, listed or sent right now, alone or as part of a bulk sale, so a second press would only repeat it.
   const busy = useUi((s) => s.busy.has(holding.id));
+  const meta = useMeta().data;
   const sellable = isSellable(holding, now);
+  const tenner = tennerTakes(holding, now, meta?.sellToTenner);
   return (
-    <div className="flex items-center gap-1">
-      {sellable ? (
-        <Button className="h-8 min-w-0 flex-1 px-2 text-[12.5px]" disabled={busy} onClick={() => void act("buyback", holding.id, { inMainWallet: holding.wallet === "connected" })}>
-          Sell {money(holding.buybackAmount)}
+    <div className="flex flex-col gap-1">
+      {/* Its own row, so on a narrow card neither sell button is squeezed. */}
+      {tenner ? (
+        <Button
+          tone="primary"
+          className="h-8 w-full min-w-0 px-2 text-[12px]"
+          disabled={busy}
+          title={`${BRAND.name} pays the same ${money(holding.buybackAmount)} and drops the card in Pulse`}
+          onClick={() => void act("tenner", holding.id, { inMainWallet: holding.wallet === "connected" })}
+        >
+          To {BRAND.name}
         </Button>
       ) : null}
-      {/* Listing is signed by the trading wallet, so a card in the user's own wallet can't be listed from here. */}
-      {holding.status === "held" && holding.wallet === "trading" ? <Button tone="ghost" className="h-8 px-2 text-[12.5px]" disabled={busy} onClick={onList}>List</Button> : null}
-      {holding.wallet === "trading" ? <Button tone="ghost" className="h-8 px-2 text-[12.5px]" disabled={busy} onClick={() => void act("send", holding.id, { nft: holding.nft })}>Send</Button> : null}
-      <a title="Ship to your door" aria-label="Ship to your door" className="ml-auto flex h-8 w-8 shrink-0 items-center justify-center px-cut text-faint hover:bg-bone/[0.07] hover:text-bone" href={`https://collectorcrypt.com/assets/solana/${holding.nft}`} target="_blank" rel="noreferrer noopener">
-        <Truck size={15} aria-hidden="true" />
-      </a>
+      <div className="flex items-center gap-1">
+        {sellable ? (
+          <Button className="h-8 min-w-0 flex-1 px-2 text-[12.5px]" disabled={busy} onClick={() => void act("buyback", holding.id, { inMainWallet: holding.wallet === "connected" })}>
+            Sell {money(holding.buybackAmount)}
+          </Button>
+        ) : null}
+        {/* Listing is signed by the trading wallet, so a card in the user's own wallet can't be listed from here. */}
+        {holding.status === "held" && holding.wallet === "trading" ? <Button tone="ghost" className="h-8 px-2 text-[12.5px]" disabled={busy} onClick={onList}>List</Button> : null}
+        {holding.wallet === "trading" ? <Button tone="ghost" className="h-8 px-2 text-[12.5px]" disabled={busy} onClick={() => void act("send", holding.id, { nft: holding.nft })}>Send</Button> : null}
+        <a title="Ship to your door" aria-label="Ship to your door" className="ml-auto flex h-8 w-8 shrink-0 items-center justify-center px-cut text-faint hover:bg-bone/[0.07] hover:text-bone" href={`https://collectorcrypt.com/assets/solana/${holding.nft}`} target="_blank" rel="noreferrer noopener">
+          <Truck size={15} aria-hidden="true" />
+        </a>
+      </div>
     </div>
   );
 }
@@ -201,6 +223,7 @@ function BuybackPanel({ held }: { held: Holding[] }) {
   const { holding: act } = useTrade();
   const now = useNow();
   const busy = useUi((s) => s.busy);
+  const meta = useMeta().data;
   const open = held.filter((holding) => isSellable(holding, now)).sort((a, b) => new Date(a.buybackUntil!).getTime() - new Date(b.buybackUntil!).getTime());
   return (
     <section className="slab min-w-0">
@@ -217,6 +240,9 @@ function BuybackPanel({ held }: { held: Holding[] }) {
                 <BuybackTimer holding={holding} />
               </div>
               <Button className="h-8 px-2.5 text-[12.5px]" disabled={busy.has(holding.id)} onClick={() => void act("buyback", holding.id, { inMainWallet: holding.wallet === "connected" })}>Sell {money(holding.buybackAmount, true)}</Button>
+              {tennerTakes(holding, now, meta?.sellToTenner) ? (
+                <Button tone="primary" className="h-8 px-2.5 text-[12.5px]" disabled={busy.has(holding.id)} title={`${BRAND.name} pays the same and drops the card in Pulse`} onClick={() => void act("tenner", holding.id, { inMainWallet: holding.wallet === "connected" })}>To {BRAND.name}</Button>
+              ) : null}
             </li>
           ))}
         </ul>

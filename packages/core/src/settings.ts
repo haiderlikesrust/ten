@@ -57,6 +57,13 @@ export interface DropSettings {
   budgetPerDayFallback: Micros;
   /** The pack sizes Pulse opens, smallest first. */
   ladder: PackTier[];
+  /**
+   * Sell to Tenner: Tenner buys a user's card for exactly what Collector Crypt's buyback pays, and drops it in Pulse
+   * in place of a pack. Unsold, it goes back to Collector Crypt for that same amount.
+   */
+  sellEnabled: boolean;
+  /** The most Tenner pays for one card. */
+  sellMax: Micros;
 }
 
 export const DEFAULT_DROP_SETTINGS: DropSettings = {
@@ -85,6 +92,9 @@ export const DEFAULT_DROP_SETTINGS: DropSettings = {
     { price: usd(250), unlockAt: usd(2_000), weight: 10, enabled: true, machines: ["pokemon_250", "onepiece_250"] },
     { price: usd(500), unlockAt: usd(3_000), weight: 5, enabled: true, machines: ["pokemon_500"] },
   ],
+  // Off until an admin turns it on: the first real sale should be watched end to end (docs/LAUNCH.md).
+  sellEnabled: false,
+  sellMax: usd(100),
 };
 
 /** Every machine the ladder can use, for loading card pools and choosing gift packs. */
